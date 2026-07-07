@@ -9,7 +9,7 @@ This project is a modified version of [andyb2000/AutoMower-BLE-MQTT](https://git
 - Connects to your mower over Bluetooth Low Energy (no cloud account, no Gardena Smart Gateway needed)
 - Publishes live status to MQTT: battery level, charging state, mower state/activity, next scheduled start, mowing schedule, statistics, RSSI, and more
 - Lets you send `MOW`, `PARK`, `PAUSE`, and `RESUME` commands to the mower via MQTT
-- Auto-discovers as sensors/buttons in Home Assistant (also readable directly from Homey via MQTT)
+- Easily readable and controllable directly from Homey (or other smart home platforms) via MQTT
 - Only occupies the mower's single BLE connection slot briefly during each poll/command, so the **official Gardena app can still connect** the rest of the time
 - Supports pausing the bridge entirely (`BRIDGE_PAUSE`/`BRIDGE_RESUME`) when you need guaranteed, uninterrupted access from the app
 
@@ -228,7 +228,8 @@ journalctl -u mower-mqtt.service -f
 ## Using it from Homey
 
 Use Homey's **MQTT Client** or **MQTT Hub** app to:
-- Subscribe to `<MOWER_BASE_TOPIC>/status` (JSON payload with battery, state, activity, schedule, RSSI, etc.) and map fields into Homey flows/insights
+- Subscribe to `<MOWER_BASE_TOPIC>/status` (JSON payload with battery, state, activity, schedule, statistics, RSSI, etc.) and map fields into Homey flows/insights
+- Subscribe to `<MOWER_BASE_TOPIC>/availability` (bridge status: `online` or `offline`)
 - Publish `MOW`, `PARK`, `PAUSE`, or `RESUME` to `<MOWER_BASE_TOPIC>/command` to control the mower
 - Publish `BRIDGE_PAUSE` to `<MOWER_BASE_TOPIC>/command` before opening the official Gardena app for an extended session, and `BRIDGE_RESUME` afterwards, to guarantee no BLE conflicts (this stops/starts the bridge polling loop)
 - Publish a duration in seconds to `<MOWER_BASE_TOPIC>/custom_value` to set a custom manual override mow duration (default is 3600), which can be read back from `<MOWER_BASE_TOPIC>/state/custom_value`
@@ -242,12 +243,22 @@ Example status payload:
   "Activity": "PARKED",
   "NextStartSchedule": "2026-07-07T15:00:00+00:00",
   "LastError": "UNKNOWN",
+  "LastErrorSchedule": null,
+  "CurrUpdateSchedule": "2026-07-07T08:50:55Z",
   "Manufacturer": "Gardena",
   "Model": "SILENO Minimo 250",
   "SerialNumber": "230471273",
   "MowerName": "SILENO minimo 250",
   "Schedule": "Tue,Fri 15:00 (1h30m)",
-  "RSSI": -80
+  "RSSI": -80,
+  "RemainingMowTime": 0,
+  "totalRunningTime": 12345,
+  "totalCuttingTime": 10000,
+  "totalChargingTime": 2345,
+  "totalSearchingTime": 120,
+  "numberOfCollisions": 42,
+  "numberOfChargingCycles": 150,
+  "cuttingBladeUsageTime": 9800
 }
 ```
 
