@@ -134,11 +134,7 @@ On a Pi Zero W, dependency installation can take 20–40 minutes if any packages
 
 Rather than editing the script or hardcoding values, all settings live in a small config file that's loaded as environment variables by `systemd`. This keeps secrets (MQTT password, etc.) out of the script and out of git.
 
-1. Copy the example config:
-   ```bash
-   cp mower.env.example mower.env
-   ```
-2. Edit it with your own values:
+Edit it with your own values:
    ```bash
    nano mower.env
    ```
@@ -161,11 +157,6 @@ Rather than editing the script or hardcoding values, all settings live in a smal
    # The PIN configured on your mower (same PIN used in the official Gardena app)
    MOWER_PIN=1234
    ```
-3. Make sure this file is never committed to git — it already has an entry in `.gitignore`, but double-check with:
-   ```bash
-   git status
-   ```
-   `mower.env` should **not** appear as a trackable file.
 
 ### Finding your mower's details
 
@@ -296,4 +287,4 @@ If you're installing the official `automower-ble` package instead of the fork an
 
 ## License
 
-This project is a derivative of the two upstream projects credited above. Check their license terms before redistributing, and add a `LICENSE` file here that's compatible with those terms.
+This project is licensed under the GPL-3.0 License. See the [LICENSE](file:///home/robin/HomeyDev/GardenaMower-BLE-MQTT/LICENSE) file for the full text.

@@ -1,5 +1,4 @@
 # Real config with secrets — never commit this, use mower.env.example as the template
-mower.env
 
 # Python
 .venv/
