@@ -122,7 +122,7 @@ pip3 install bleak aiomqtt
 
 Install the mower protocol library **from the patched fork** (recommended — includes fixes for parsing bugs described below, no manual patching needed):
 ```bash
-pip3 install "git+https://github.com/gruijter/AutoMower-BLE.git@main"
+pip3 install "git+https://github.com/gruijter/AutoMower-BLE.git@combined-fixes"
 ```
 > Adjust this URL if you end up publishing the patched library under a different fork name or branch.
 >
@@ -260,6 +260,12 @@ A BLE mower only accepts **one** connection at a time. This bridge is designed t
 - If you need guaranteed access from the app (e.g. for a firmware update), send `BRIDGE_PAUSE` to the command topic first, and `BRIDGE_RESUME` when you're done.
 
 ## Known upstream library issues
+The fixes below are combined in the [`combined-fixes`](https://github.com/gruijter/AutoMower-BLE/tree/combined-fixes) 
+branch of the patched fork used by this project, pending review upstream. 
+Track their status: [#151](https://github.com/alistair23/AutoMower-BLE/pull/151) 
+(parse_response), [#152](https://github.com/alistair23/AutoMower-BLE/pull/152) 
+(GetOverride), [#153](https://github.com/alistair23/AutoMower-BLE/pull/153) 
+(GetTask).
 
 The following bugs exist in the upstream `automower_ble` library (as of the versions tested) and are fixed in [the patched fork](https://github.com/gruijter/AutoMower-BLE) used by this project. Pull requests for these have been submitted upstream — check their status there before assuming they're still needed:
 
