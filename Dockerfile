@@ -9,7 +9,7 @@
 # D-Bus socket and host networking. See docker-compose.yml for the required
 # runtime configuration (network_mode: host, /run/dbus mount, privileged).
 
-FROM python:3.11-slim-bookworm
+FROM python:3.12-slim-bookworm
 
 # bluez / bluez-tools: gives us `bt-agent`, which registers a
 #   NoInputNoOutput pairing agent on the (shared) D-Bus bus so headless BLE
