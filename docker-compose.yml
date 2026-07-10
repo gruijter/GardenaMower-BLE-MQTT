@@ -1,0 +1,18 @@
+services:
+  gardena-mower-mqtt:
+    # Prebuilt multi-arch image (linux/amd64 + linux/arm64), published
+    # automatically by .github/workflows/docker-publish.yml. Swap this for
+    # `build: .` if you'd rather build locally instead of pulling.
+    image: ghcr.io/gruijter/gardenamower-ble-mqtt:latest
+    container_name: gardena-mower-mqtt
+    restart: unless-stopped
+
+    # Required for reliable BLE/D-Bus + MQTT connectivity from inside the
+    # container — see README for details on why each of these is needed.
+    network_mode: host
+    privileged: true
+    volumes:
+      - /run/dbus:/run/dbus
+
+    env_file:
+      - mower.env

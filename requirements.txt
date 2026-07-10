@@ -1,0 +1,8 @@
+bleak
+aiomqtt
+
+# Patched fork with fixes for GetMessage / GetOverride / GetTask parsing
+# bugs, pending upstream review (alistair23/AutoMower-BLE PRs #151, #152,
+# #153). Switch this back to the plain `automower-ble` PyPI package once
+# those are merged.
+git+https://github.com/gruijter/AutoMower-BLE.git@combined-fixes
