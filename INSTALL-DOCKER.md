@@ -164,7 +164,7 @@ From now on, this bonding is remembered by the host — you will **not** need to
 
 In Homey, using the **MQTT Client** or **MQTT Hub** app:
 - Subscribe to `<MOWER_BASE_TOPIC>/status` — a JSON payload with battery, charging state, mower state/activity, next scheduled start, schedule, RSSI, orientation/sensors, and more
-- Publish `MOW`, `PARK`, `PARK_PERMANENTLY`, `RESUME_SCHEDULE`, `SPOT_CUT`, `STOP_SPOT_CUT`, or configuration commands (like `DRIVE_PAST_WIRE <dist>`, `REVERSING_DISTANCE <dist>`, `GARAGE_ENABLED <ON/OFF>`, `RADAR_ENABLED <ON/OFF>`, `ECO_MODE <ON/OFF>`, `GENERATE_LOOP_SIGNAL`) to `<MOWER_BASE_TOPIC>/command` to control the mower
+- Publish `MOW`, `PARK`, `PARK_PERMANENTLY`, `RESUME_SCHEDULE`, `SPOT_CUT`, `STOP_SPOT_CUT`, or configuration commands (like `DRIVE_PAST_WIRE <dist>`, `REVERSING_DISTANCE <dist>`, `GARAGE_ENABLED <ON/OFF>`, `RADAR_ENABLED <ON/OFF>`, `ECO_MODE <ON/OFF>`, `GENERATE_LOOP_SIGNAL`, `SET_TIME`) to `<MOWER_BASE_TOPIC>/command` to control the mower
 - Publish `BRIDGE_PAUSE` to that same command topic before opening the official Gardena app for an extended session (e.g. a firmware update), and `BRIDGE_RESUME` afterwards — this guarantees no BLE conflict between the bridge and the app
 
 Example status payload:

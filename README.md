@@ -221,7 +221,7 @@ journalctl -u mower-mqtt.service -f
 Use Homey's **MQTT Client** or **MQTT Hub** app to:
 - Subscribe to `<MOWER_BASE_TOPIC>/status` (JSON payload with battery, state, activity, schedule, statistics, RSSI, orientation/sensors, configuration settings, etc.) and map fields into Homey flows/insights
 - Subscribe to `<MOWER_BASE_TOPIC>/availability` (bridge status: `online` or `offline`)
-- Publish control commands (`MOW`, `PARK`, `PARK_PERMANENTLY`, `PAUSE`, `RESUME`, `RESUME_SCHEDULE`, `SPOT_CUT`, `STOP_SPOT_CUT`, `GENERATE_LOOP_SIGNAL`) or configuration settings (`DRIVE_PAST_WIRE <dist>`, `REVERSING_DISTANCE <dist>`, `GARAGE_ENABLED <ON/OFF>`, `RADAR_ENABLED <ON/OFF>`, `ECO_MODE <ON/OFF>`) to `<MOWER_BASE_TOPIC>/command` to control the mower
+- Publish control commands (`MOW`, `PARK`, `PARK_PERMANENTLY`, `PAUSE`, `RESUME`, `RESUME_SCHEDULE`, `SPOT_CUT`, `STOP_SPOT_CUT`, `GENERATE_LOOP_SIGNAL`, `SET_TIME`) or configuration settings (`DRIVE_PAST_WIRE <dist>`, `REVERSING_DISTANCE <dist>`, `GARAGE_ENABLED <ON/OFF>`, `RADAR_ENABLED <ON/OFF>`, `ECO_MODE <ON/OFF>`) to `<MOWER_BASE_TOPIC>/command` to control the mower
 - Publish `BRIDGE_PAUSE` to `<MOWER_BASE_TOPIC>/command` before opening the official Gardena app for an extended session, and `BRIDGE_RESUME` afterwards, to guarantee no BLE conflicts (this stops/starts the bridge polling loop)
 - Publish a duration in seconds to `<MOWER_BASE_TOPIC>/custom_value` to set a custom manual override mow duration (default is 3600), which can be read back from `<MOWER_BASE_TOPIC>/state/custom_value`
 

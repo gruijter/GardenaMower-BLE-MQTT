@@ -208,7 +208,8 @@ UNSUPPORTED_COMMANDS_WHITELIST = {
     "GetFrostSensorEnabled",
     "GetFrostSensorEnabledLegacy",
     "GetLoopSignals",
-    "GetLoopSignalStrength"
+    "GetLoopSignalStrength",
+    "GetTime"
 }
 
 
@@ -378,14 +379,36 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
         activity = await safe_mower_command(mower, "GetActivity")
         next_start = await safe_mower_command(mower, "GetNextStartTime")
         last_error = await safe_mower_command(mower, "GetMessage", optional=True, messageId=0)
+        mower_local_time = await safe_mower_command(mower, "GetTime", optional=True)
 
         if None in (battery, charging, state, activity, next_start):
             LOG.error("One or more essential mower commands failed, skipping this poll cycle")
             return status
 
+        # Compute timezone offset between mower's local clock and real UTC epoch
+        now_utc = dt.datetime.now(tz=dt.timezone.utc)
+        now_utc_ts = int(now_utc.timestamp())
+        
+        if mower_local_time is not None:
+            # Mower time is seconds since 1970 naive local time.
+            # Offset is mower local epoch minus container UTC epoch.
+            offset_seconds = mower_local_time - now_utc_ts
+            mower_local_dt = dt.datetime.fromtimestamp(mower_local_time, tz=dt.timezone.utc).replace(tzinfo=None)
+        else:
+            # Fallback if GetTime is unsupported: estimate offset from container local timezone settings
+            local_now = dt.datetime.now()
+            utc_now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+            offset_seconds = int((local_now - utc_now).total_seconds())
+            mower_local_dt = local_now
+
+        # Convert local epoch timestamps from mower back to real UTC datetime for external consumers
+        next_start_utc = int(next_start) - offset_seconds
+        next_start_iso = dt.datetime.fromtimestamp(next_start_utc, tz=dt.timezone.utc).isoformat()
+
         if last_error is not None:
             last_error_name = ErrorCodes(last_error["code"]).name
-            last_error_time = dt.datetime.fromtimestamp(int(last_error["time"]), tz=dt.timezone.utc).isoformat()
+            last_error_time_utc = int(last_error["time"]) - offset_seconds
+            last_error_time = dt.datetime.fromtimestamp(last_error_time_utc, tz=dt.timezone.utc).isoformat()
         else:
             last_error_name = "UNKNOWN"
             last_error_time = None
@@ -397,10 +420,10 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
             Charging="ON" if charging else "OFF",
             State=MowerState(state).name,
             Activity=activity_name,
-            NextStartSchedule=dt.datetime.fromtimestamp(int(next_start), tz=dt.timezone.utc).isoformat(),
+            NextStartSchedule=next_start_iso,
             LastError=last_error_name,
             LastErrorSchedule=last_error_time,
-            CurrUpdateSchedule=dt.datetime.now(tz=dt.timezone.utc).isoformat(),
+            CurrUpdateSchedule=now_utc.isoformat(),
             totalRunningTime=data.get("totalRunningTime", 0),
             totalCuttingTime=data.get("totalCuttingTime", 0),
             totalChargingTime=data.get("totalChargingTime", 0),
@@ -410,6 +433,9 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
             cuttingBladeUsageTime=data.get("cuttingBladeUsageTime", 0)
         )
 
+        if mower_local_time is not None:
+            status["mowerLocalTime"] = mower_local_dt.isoformat()
+
         # Calculate remaining mow time
         remaining_mow_seconds = 0
         if activity_name == "MOWING":
@@ -418,8 +444,11 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
                 # Manual override mow: compute from override startTime + duration
                 start_ts = int(override["startTime"])
                 duration_s = int(override["duration"])
-                now_ts = int(dt.datetime.now(tz=dt.timezone.utc).timestamp())
-                remaining_mow_seconds = max(0, (start_ts + duration_s) - now_ts)
+                if mower_local_time is not None:
+                    remaining_mow_seconds = max(0, (start_ts + duration_s) - mower_local_time)
+                else:
+                    now_ts_local = int(dt.datetime.now().timestamp())
+                    remaining_mow_seconds = max(0, (start_ts + duration_s) - now_ts_local)
                 LOG.debug("Override mow remaining: %d seconds", remaining_mow_seconds)
             else:
                 # Scheduled mow: find the active task for today
@@ -429,9 +458,8 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
                         "useOnMonday", "useOnTuesday", "useOnWednesday", "useOnThursday",
                         "useOnFriday", "useOnSaturday", "useOnSunday",
                     ]
-                    now_local = dt.datetime.now()
-                    day_of_week = now_local.weekday()  # 0=Mon, 6=Sun
-                    secs_since_midnight = now_local.hour * 3600 + now_local.minute * 60 + now_local.second
+                    day_of_week = mower_local_dt.weekday()  # 0=Mon, 6=Sun
+                    secs_since_midnight = mower_local_dt.hour * 3600 + mower_local_dt.minute * 60 + mower_local_dt.second
                     for task in tasks:
                         if task.get(day_keys[day_of_week]):
                             task_start = int(task.get("start", 0))
@@ -670,6 +698,20 @@ async def send_command(mower: Mower, cmd: str, args: Optional[list] = None) -> N
     elif cmd == "GENERATE_LOOP_SIGNAL":
         await mower.command("GenerateLoopSignal")
         LOG.info("Generated new loop signal ✅")
+    elif cmd == "SET_TIME":
+        if args:
+            try:
+                target_time = int(args[0])
+            except ValueError:
+                LOG.error("Invalid timestamp for SET_TIME: %s", args[0])
+                return
+        else:
+            # Sync to local naive time of the container
+            local_now = dt.datetime.now()
+            target_time = int(local_now.replace(tzinfo=dt.timezone.utc).timestamp())
+            
+        await mower.command("SetTime", time=target_time)
+        LOG.info("Set mower time to %d ✅", target_time)
     else:
         LOG.warning("Unknown command received: %s", cmd)
 
