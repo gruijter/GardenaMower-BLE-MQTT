@@ -811,38 +811,15 @@ async def main() -> None:
                     await asyncio.sleep(5)
         LOG.error("Command '%s' failed after retry", payload)
 
-    # Resolve mower serial number before establishing MQTT connection and heartbeat
-    serial_number = None
-    LOG.info("Initializing connection to mower to retrieve serial number...")
-    while not shutdown_event.is_set():
-        try:
-            async def _init_static(mower: Mower, _rssi: Optional[int]) -> Dict[str, Any]:
-                return await get_static_info(mower)
-
-            static_info = await with_mower_connection(_init_static)
-            serial_number = static_info.get("serialNumber")
-            if serial_number:
-                LOG.info("Mower serial number retrieved successfully: %s", serial_number)
-                break
-            else:
-                LOG.warning("Could not retrieve serial number from static info, retrying in 10s...")
-        except Exception as e:
-            LOG.warning("Failed to connect to mower on startup to retrieve serial number: %s. Retrying in 10s...", e)
-
-        for _ in range(10):
-            if shutdown_event.is_set():
-                break
-            await asyncio.sleep(1)
-            watchdog_reset()
-
-    if shutdown_event.is_set() or not serial_number:
-        LOG.info("Shutdown requested before serial number could be retrieved.")
-        return
-
-    mower_base_topic = f"{CFG.mqtt_base_topic}/{serial_number}"
+    # Derive a stable, unique device ID from the configured MAC address.
+    # Using the MAC means the bridge starts immediately without a BLE pre-connection
+    # just to fetch the serial number, and the topic is always predictable.
+    mower_id = CFG.mower_address.replace(":", "_").upper()
+    mower_base_topic = f"{CFG.mqtt_base_topic}/{mower_id}"
     availability_topic = f"{mower_base_topic}/availability"
+    LOG.info("MQTT device topic: %s", mower_base_topic)
 
-    # Start the watchdog heartbeat task with the correct availability topic
+    # Start the watchdog heartbeat task
     asyncio.create_task(heartbeat_task(availability_topic))
 
     while not shutdown_event.is_set():

@@ -175,9 +175,9 @@ Once this works, stop it with `Ctrl+C` and move on.
 ## Part 6 — Connect it to Homey
 
 In Homey, using the **MQTT Client** or **MQTT Hub** app:
-- Subscribe to `<MOWER_BASE_TOPIC>/<serial_number>/status` — a JSON payload with battery, charging state, mower state/activity, next scheduled start, schedule, RSSI, orientation/sensors, and more
-- Subscribe to `<MOWER_BASE_TOPIC>/<serial_number>/availability` — bridge status: `online` or `offline`
-- Publish commands to `<MOWER_BASE_TOPIC>/<serial_number>/command` to control the mower
+- Subscribe to `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/status` — a JSON payload with battery, charging state, mower state/activity, next scheduled start, schedule, RSSI, orientation/sensors, and more
+- Subscribe to `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/availability` — bridge status: `online` or `offline`
+- Publish commands to `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/command` to control the mower
 - Publish `BRIDGE_PAUSE` to that same command topic before opening the official Gardena app for an extended session (e.g. a firmware update), and `BRIDGE_RESUME` afterwards — this guarantees no BLE conflict between the bridge and the app
 
 For the complete list of status fields and all available commands, see the [README.md](README.md).

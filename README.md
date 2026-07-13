@@ -17,12 +17,12 @@ To install and run the bridge, please refer to one of the dedicated installation
 
 ## MQTT Interface Reference
 
-The bridge identifies the connected mower dynamically upon startup and prefixes all MQTT topics with the mower's unique physical serial number.
+The bridge uses the mower's **Bluetooth MAC address** (from `MOWER_ADDRESS` in config) as the unique device identifier in all MQTT topics. Colons are replaced with underscores, e.g. `AA:BB:CC:DD:EE:FF` → `AA_BB_CC_DD_EE_FF`. This means topics are always predictable from config, and the bridge starts immediately without a BLE pre-connection.
 
 ### Topics Structure
-* **Status**: `<MOWER_BASE_TOPIC>/<serial_number>/status`
-* **Command**: `<MOWER_BASE_TOPIC>/<serial_number>/command`
-* **Availability**: `<MOWER_BASE_TOPIC>/<serial_number>/availability`
+* **Status**: `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/status`
+* **Command**: `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/command`
+* **Availability**: `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/availability`
 
 ---
 
@@ -102,7 +102,7 @@ Below is the complete list of keys that can be published in the JSON status payl
 
 ## Maximum Input Commands
 
-Publish any of the following raw strings to `<MOWER_BASE_TOPIC>/<serial_number>/command` to trigger the corresponding operation.
+Publish any of the following raw strings to `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/command` to trigger the corresponding operation.
 
 ### Mower Activity & Scheduling Commands
 * **`MOW`**: Logs in with operator PIN, sets mode to AUTO, overrides standard schedule using custom duration, and issues physical start trigger.
