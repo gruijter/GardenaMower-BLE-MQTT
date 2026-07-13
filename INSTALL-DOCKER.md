@@ -91,31 +91,7 @@ cp mower.env.example mower.env
 nano mower.env
 ```
 
-Fill in:
-```ini
-# MQTT broker connection
-MQTT_HOST=192.168.1.10
-MQTT_PORT=1883
-MQTT_USER=
-MQTT_PASS=
-
-# MQTT topic prefix used for all published/subscribed topics
-MOWER_BASE_TOPIC=mower_ble
-
-# How often (seconds) to poll the mower. 60 is a sensible default.
-MOWER_POLL=60
-
-# Your mower's Bluetooth MAC address.
-# Leave blank or set to AA:BB:CC:DD:EE:FF to enable BLE autodiscovery (detects the first nearby mower).
-MOWER_ADDRESS=AA:BB:CC:DD:EE:FF
-
-# The PIN configured on your mower (same PIN used in the official Gardena app)
-MOWER_PIN=1234
-
-# Optional logging settings (LOG_LEVEL can be DEBUG, INFO, WARNING, ERROR)
-# LOG_LEVEL=INFO
-# LOG_FILE=/app/logs/mower.log
-```
+Configure your MQTT broker connection details, mower PIN, and settings inside `mower.env`. All options are fully documented with inline comments directly inside [mower.env.example](mower.env.example).
 
 ### Finding your mower's details
 
@@ -129,7 +105,7 @@ MOWER_PIN=1234
   bluetoothctl scan on
   ```
   Look for your mower's name in the output, note its address, then `bluetoothctl scan off`.
-- **PIN**: the same PIN you use in the official Gardena app (Settings → Bluetooth). Default is often `1234` if never changed — entered on the mower via its buttons as: `1`=Power, `2`=Calendar, `3`=Start, `4`=Home.
+- **PIN**: the same PIN you use in the official Gardena app (Settings → Bluetooth). Default is often `1234` if never changed. It must be physically entered on the mower's buttons during pairing (mapping details are documented inline in [mower.env.example](mower.env.example)).
 
 ---
 
