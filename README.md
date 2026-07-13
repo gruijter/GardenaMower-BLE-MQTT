@@ -10,8 +10,8 @@ This allows you to monitor and control your mower from **Homey** (or Home Assist
 
 To install and run the bridge, please refer to one of the dedicated installation documents:
 
-* 🐳 **[Docker Installation Guide (Recommended)](file:///home/robin/HomeyDev/GardenaMower-BLE-MQTT/INSTALL-DOCKER.md)**: The fastest way to get up and running inside a Docker container.
-* ⚙️ **[Native Installation Guide](file:///home/robin/HomeyDev/GardenaMower-BLE-MQTT/INSTALL-NATIVE.md)**: Run the script natively as a systemd service directly on your host system (e.g. Raspberry Pi OS).
+* 🐳 **[INSTALL-DOCKER.md](file:///home/robin/HomeyDev/GardenaMower-BLE-MQTT/INSTALL-DOCKER.md)** (Docker Installation Guide - Recommended): The fastest way to get up and running inside a Docker container.
+* ⚙️ **[INSTALL-NATIVE.md](file:///home/robin/HomeyDev/GardenaMower-BLE-MQTT/INSTALL-NATIVE.md)** (Native Installation Guide): Run the script natively as a systemd service directly on your host system (e.g. Raspberry Pi OS).
 
 ---
 
@@ -142,6 +142,13 @@ Publish any of the following raw strings to `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_
 ### Bridge System Commands
 * **`BRIDGE_PAUSE`**: Pauses the bridge's background BLE polling loop, freeing the single Bluetooth slot so the official Gardena app can connect continuously.
 * **`BRIDGE_RESUME`**: Resumes normal background BLE polling.
+
+---
+
+## Credits
+
+- [andyb2000/AutoMower-BLE-MQTT](https://github.com/andyb2000/AutoMower-BLE-MQTT) — the original script this project is based on
+- [alistair23/AutoMower-BLE](https://github.com/alistair23/AutoMower-BLE) — the underlying BLE protocol library
 
 ---
 
