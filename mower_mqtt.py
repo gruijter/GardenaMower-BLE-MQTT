@@ -450,10 +450,12 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
         else:
             status["collisionSensor"] = "Oké"
 
-        # Frost sensor
+        # Frost sensor (try regular and legacy)
         frost_sensor = await safe_mower_command(mower, "GetFrostSensorEnabled", optional=True)
-        if frost_sensor is not None:
-            status["frostSensorEnabled"] = "ON" if frost_sensor else "OFF"
+        legacy_frost = await safe_mower_command(mower, "GetFrostSensorEnabledLegacy", optional=True)
+        if frost_sensor is not None or legacy_frost is not None:
+            is_enabled = bool(frost_sensor) or bool(legacy_frost)
+            status["frostSensorEnabled"] = "ON" if is_enabled else "OFF"
             
         # SensorControl
         sensor_control = await safe_mower_command(mower, "GetSensorControlEnabled", optional=True)
@@ -462,7 +464,7 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
             
         sensor_sensitivity = await safe_mower_command(mower, "GetSensorControlSensitivity", optional=True)
         if sensor_sensitivity is not None:
-            sens_map = {0: "LOW", 1: "MEDIUM", 2: "HIGH"}
+            sens_map = {1: "LOW", 2: "MEDIUM", 3: "HIGH"}
             status["sensorControlSensitivity"] = sens_map.get(sensor_sensitivity, str(sensor_sensitivity))
             
         # Loop signal quality / strength / A0 / F / Guide
@@ -476,6 +478,28 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
                 status["loopSignalGuide2"] = sig_quality.get("guide2Signal")
             if sig_quality.get("guide3Signal") is not None:
                 status["loopSignalGuide3"] = sig_quality.get("guide3Signal")
+        else:
+            # Fallback for models (like Sileno Minimo) that don't support the comboard-based GetSignalQuality command
+            # Try signalType=1 first, then signalType=0
+            loop_signals = await safe_mower_command(mower, "GetLoopSignals", optional=True, signalType=1)
+            if loop_signals is None:
+                loop_signals = await safe_mower_command(mower, "GetLoopSignals", optional=True, signalType=0)
+                
+            if loop_signals is not None:
+                status["loopSignalA"] = loop_signals.get("a0Signal")
+                status["loopSignalF"] = loop_signals.get("fSignal")
+                status["loopSignalGuide"] = loop_signals.get("guide1Signal")
+                if loop_signals.get("guide2Signal") is not None:
+                    status["loopSignalGuide2"] = loop_signals.get("guide2Signal")
+                if loop_signals.get("guide3Signal") is not None:
+                    status["loopSignalGuide3"] = loop_signals.get("guide3Signal")
+                    
+            loop_strength = await safe_mower_command(mower, "GetLoopSignalStrength", optional=True, signalType=1)
+            if loop_strength is None:
+                loop_strength = await safe_mower_command(mower, "GetLoopSignalStrength", optional=True, signalType=0)
+                
+            if loop_strength is not None:
+                status["loopSignalStrength"] = loop_strength
                 
         # Battery details (Voltage, Current, Temperature)
         batt_volt = await safe_mower_command(mower, "GetBatteryVoltage", optional=True)
@@ -499,9 +523,10 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
             status["radarEnabled"] = "ON" if radar.get("enabled") else "OFF"
             status["radarAvailable"] = "ON" if radar.get("available") else "OFF"
             
-        eco_mode = await safe_mower_command(mower, "GetChargingStationLoopSignalGeneration", optional=True)
-        if eco_mode is not None:
-            status["ecoMode"] = "ON" if eco_mode else "OFF"
+        loop_gen = await safe_mower_command(mower, "GetChargingStationLoopSignalGeneration", optional=True)
+        if loop_gen is not None:
+            # Eco mode is active (ON) when loop signal generation is stopped (False / 0)
+            status["ecoMode"] = "OFF" if loop_gen else "ON"
             
         drive_past_wire = await safe_mower_command(mower, "GetDrivePastWire", optional=True)
         if drive_past_wire is not None:
