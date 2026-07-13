@@ -1,22 +1,25 @@
-# Native Installation Guide
+# GardenaMower-BLE-MQTT — Native Installation Guide
 
-This guide walks you through installing the GardenaMower-BLE-MQTT bridge natively as a `systemd` service on a Raspberry Pi or other Linux host.
+A complete, start-to-finish guide for getting your Gardena BLE mower talking to Homey via MQTT, running natively as a `systemd` service on a Raspberry Pi or other Linux host. No Docker required.
+
+Tested down to a **Raspberry Pi Zero W (1st generation)**.
 
 ---
 
 ## Requirements
 
-- **A Raspberry Pi with Bluetooth**, running Raspberry Pi OS (Bookworm-based), Lite or Desktop, 32-bit or 64-bit — this project has been tested down to a **Raspberry Pi Zero W (1st generation)**.
+- **A Raspberry Pi with Bluetooth**, running Raspberry Pi OS (Bookworm-based), Lite or Desktop, 32-bit or 64-bit.
   - The plain, non-W original **Pi Zero and Pi 1/2** have no built-in Bluetooth — use a USB Bluetooth (BLE-capable) dongle with those instead.
   - If your Pi's onboard Bluetooth turns out to be unreliable, a cheap USB BLE dongle is a good fallback there too.
 - Placement **close to the mower/charging station** — BLE range is limited, and a stable connection matters more than raw distance.
-- A Gardena BLE mower already set up and working with the official Gardena Bluetooth app (so you know its **PIN** and it's a model that supports direct BLE pairing).
-- An MQTT broker reachable from the Pi (e.g. running on Homey, Home Assistant, or standalone Mosquitto).
-- Basic comfort with SSH and the command line.
+- Your Gardena mower already set up and working with the official Gardena Bluetooth app (so you know its **PIN**)
+- An MQTT broker reachable from the Pi (e.g. running on Homey, Home Assistant, or standalone Mosquitto)
+- Basic comfort with SSH and the command line
+- Homey with the **MQTT Client** or **MQTT Hub** app installed
 
 ---
 
-## Part 1 — Prepare the Raspberry Pi
+## Part 1 — Prepare the host
 
 1. Flash **Raspberry Pi OS (Bookworm, Lite is fine)** to an SD card using [Raspberry Pi Imager](https://www.raspberrypi.com/software/). In the imager's advanced options (gear icon / Ctrl+Shift+X), set:
    - A hostname (e.g. `mower-bridge`)
@@ -33,7 +36,7 @@ This guide walks you through installing the GardenaMower-BLE-MQTT bridge nativel
    sudo apt update && sudo apt full-upgrade -y
    sudo apt install -y git python3-venv python3-pip python3-dev build-essential libglib2.0-dev bluez bluez-tools
    ```
-4. Confirm Bluetooth is up:
+4. Confirm Bluetooth is working:
    ```bash
    bluetoothctl show
    ```
@@ -108,33 +111,34 @@ On a Pi Zero W, dependency installation can take 20–40 minutes if any packages
 
 ---
 
-## Part 4 — Configuration via a separate config file
+## Part 4 — Configure it
 
-Rather than editing the script or hardcoding values, all settings live in a small config file that's loaded as environment variables by `systemd`. This keeps secrets (MQTT password, etc.) out of the script and out of git.
+All settings live in a config file that's loaded as environment variables by `systemd`. This keeps secrets (MQTT password, etc.) out of the script and out of git.
 
-Edit it with your own values:
-   ```bash
-   nano mower.env
-   ```
-   ```ini
-   # MQTT broker connection
-   MQTT_HOST=192.168.1.10
-   MQTT_PORT=1883
-   MQTT_USER=
-   MQTT_PASS=
+```bash
+nano mower.env
+```
 
-   # MQTT topic prefix used for all published/subscribed topics
-   MOWER_BASE_TOPIC=mower_ble
+Fill in:
+```ini
+# MQTT broker connection
+MQTT_HOST=192.168.1.10
+MQTT_PORT=1883
+MQTT_USER=
+MQTT_PASS=
 
-   # How often (seconds) to poll the mower. 60 is a sensible default — don't go much lower.
-   MOWER_POLL=60
+# MQTT topic prefix used for all published/subscribed topics
+MOWER_BASE_TOPIC=mower_ble
 
-   # Your mower's Bluetooth MAC address
-   MOWER_ADDRESS=AA:BB:CC:DD:EE:FF
+# How often (seconds) to poll the mower. 60 is a sensible default — don't go much lower.
+MOWER_POLL=60
 
-   # The PIN configured on your mower (same PIN used in the official Gardena app)
-   MOWER_PIN=1234
-   ```
+# Your mower's Bluetooth MAC address
+MOWER_ADDRESS=AA:BB:CC:DD:EE:FF
+
+# The PIN configured on your mower (same PIN used in the official Gardena app)
+MOWER_PIN=1234
+```
 
 ### Finding your mower's details
 
@@ -143,26 +147,44 @@ Edit it with your own values:
   bluetoothctl scan on
   ```
   Look for your mower's name, then `bluetoothctl scan off`.
-- **PIN**: the same PIN you use to connect via the official app (Settings → Bluetooth, in the app). Default is often `1234` if never changed — entered on the mower via its buttons as: `1`=Power, `2`=Calendar, `3`=Start, `4`=Home.
+- **PIN**: the same PIN you use in the official Gardena app (Settings → Bluetooth). Default is often `1234` if never changed — entered on the mower via its buttons as: `1`=Power, `2`=Calendar, `3`=Start, `4`=Home.
 
 ---
 
-## Part 5 — First manual test
+## Part 5 — First run: pairing
 
-Before setting up the service, run it directly so you can see what's happening and fix anything before it's "hidden" behind systemd:
+Before setting up the service, run it directly so you can see what's happening live:
 
 ```bash
 export $(grep -v '^#' mower.env | xargs)
 python3 mower_mqtt.py
 ```
 
-Put the mower in Bluetooth pairing mode (check your mower's manual for the exact button sequence — pairing mode is usually indicated by specific LED symbols and lasts around 2–3 minutes) and watch the log. You should see it scan, connect, pair, and start publishing status.
+Put the mower in Bluetooth pairing mode (check your mower's manual for the exact button sequence — pairing mode is usually indicated by specific LED symbols and **lasts only around 2–3 minutes**) and watch the log. You should see it scan, connect, pair, and start publishing status.
 
-Once this works, stop it with `Ctrl+C` and move on to running it as a proper service.
+Watch for a line like:
+```
+Status: Battery=XX%, Charging=..., State=..., Activity=...
+```
+That confirms pairing succeeded and status is being published to MQTT.
+
+Once this works, stop it with `Ctrl+C` and move on.
 
 ---
 
-## Part 6 — Run as a systemd service
+## Part 6 — Connect it to Homey
+
+In Homey, using the **MQTT Client** or **MQTT Hub** app:
+- Subscribe to `<MOWER_BASE_TOPIC>/<serial_number>/status` — a JSON payload with battery, charging state, mower state/activity, next scheduled start, schedule, RSSI, orientation/sensors, and more
+- Subscribe to `<MOWER_BASE_TOPIC>/<serial_number>/availability` — bridge status: `online` or `offline`
+- Publish commands to `<MOWER_BASE_TOPIC>/<serial_number>/command` to control the mower
+- Publish `BRIDGE_PAUSE` to that same command topic before opening the official Gardena app for an extended session (e.g. a firmware update), and `BRIDGE_RESUME` afterwards — this guarantees no BLE conflict between the bridge and the app
+
+For the complete list of status fields and all available commands, see the [README.md](README.md).
+
+---
+
+## Part 7 — Run as a systemd service
 
 ```bash
 sudo nano /etc/systemd/system/mower-mqtt.service
@@ -196,13 +218,57 @@ sudo systemctl enable --now mower-mqtt.service
 journalctl -u mower-mqtt.service -f
 ```
 
+From now on, this bonding is remembered by the host — you will **not** need to repeat the pairing steps on future restarts or reboots.
+
+---
+
+## Coexisting with the official Gardena app
+
+A BLE mower accepts only **one** connection at a time. This bridge connects only briefly during each poll cycle (roughly every `MOWER_POLL` seconds) and for the moment it takes to send a command, then disconnects — it never holds the connection open. The official app should be able to connect the rest of the time without a fight. For guaranteed conflict-free access (e.g. a firmware update), use `BRIDGE_PAUSE` / `BRIDGE_RESUME` as described above.
+
+---
+
+## Updating to a new version
+
+```bash
+cd ~/GardenaMower-BLE-MQTT
+git pull
+source .venv/bin/activate
+pip3 install -r requirements.txt
+sudo systemctl restart mower-mqtt.service
+```
+No pairing repeat needed — bonding is preserved on the host.
+
+---
+
+## Uninstalling
+
+```bash
+sudo systemctl disable --now mower-mqtt.service
+sudo rm /etc/systemd/system/mower-mqtt.service
+sudo systemctl daemon-reload
+rm -rf ~/GardenaMower-BLE-MQTT
+```
+If you also want to remove the Bluetooth bonding from the host:
+```bash
+bluetoothctl remove <MOWER_MAC>
+```
+
 ---
 
 ## Troubleshooting
 
+- **`bluetoothctl show` shows no adapter / `Powered: no`**: see Part 1 step 4. If there's genuinely no Bluetooth hardware, use a USB BLE dongle.
 - **`[org.bluez.Error.AuthenticationFailed]` when pairing**: no BlueZ agent registered — make sure `bt-agent.service` (Part 2) is running.
-- **Pairing works sometimes, not others**: the mower's Bluetooth pairing mode has a limited window (roughly 2–3 minutes) — make sure you're connecting while it's actively in that mode.
-- **`Service Discovery has not been performed yet`**: usually a transient BLE hiccup right after (re)connecting — the bridge automatically reconnects on the next cycle.
-- **Mower accepts `MOW` but doesn't move**: check that the boundary wire/charging station isn't in a power-saving mode with the signal disabled — the mower will accept the BLE command but refuses to physically move without an active guide wire signal.
-- **Duplicate/garbled log lines right after a restart**: usually two processes briefly overlapping during a fast manual restart — this is what `TimeoutStopSec`/`KillMode=mixed` in the service file above prevents in normal operation.
-- **Can't connect from the official app while the bridge runs**: send `BRIDGE_PAUSE` to the command topic before opening the app.
+- **Pairing fails or times out**: the mower's pairing window (~2–3 minutes) likely closed before you connected — put it back in pairing mode and try again.
+- **`MOW` command is accepted but the mower doesn't physically move**: check that the charging station / boundary wire isn't in a power-saving mode with its signal disabled — the mower will accept the BLE command but refuses to move without an active guide wire signal. Check this in the Gardena app.
+- **Can't connect with the official Gardena app while the bridge is running**: publish `BRIDGE_PAUSE` to the command topic first, `BRIDGE_RESUME` when you're done.
+- **Status stops updating after a while**: check `journalctl -u mower-mqtt.service -f` for errors; the bridge automatically reconnects on BLE drops, but a fully unreachable mower (out of range, powered off) will simply show no new status until it's reachable again.
+- **Still stuck**: open an issue on the [GitHub repository](https://github.com/gruijter/GardenaMower-BLE-MQTT) with your `journalctl` output attached.
+
+---
+
+## Credits
+
+- [andyb2000/AutoMower-BLE-MQTT](https://github.com/andyb2000/AutoMower-BLE-MQTT) — the original script this project is based on
+- [alistair23/AutoMower-BLE](https://github.com/alistair23/AutoMower-BLE) — the underlying BLE protocol library
