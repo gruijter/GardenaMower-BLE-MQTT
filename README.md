@@ -219,9 +219,9 @@ journalctl -u mower-mqtt.service -f
 ## Using it from Homey
 
 Use Homey's **MQTT Client** or **MQTT Hub** app to:
-- Subscribe to `<MOWER_BASE_TOPIC>/status` (JSON payload with battery, state, activity, schedule, statistics, RSSI, etc.) and map fields into Homey flows/insights
+- Subscribe to `<MOWER_BASE_TOPIC>/status` (JSON payload with battery, state, activity, schedule, statistics, RSSI, orientation/sensors, configuration settings, etc.) and map fields into Homey flows/insights
 - Subscribe to `<MOWER_BASE_TOPIC>/availability` (bridge status: `online` or `offline`)
-- Publish `MOW`, `PARK`, `PAUSE`, or `RESUME` to `<MOWER_BASE_TOPIC>/command` to control the mower
+- Publish control commands (`MOW`, `PARK`, `PARK_PERMANENTLY`, `PAUSE`, `RESUME`, `RESUME_SCHEDULE`, `SPOT_CUT`, `STOP_SPOT_CUT`, `GENERATE_LOOP_SIGNAL`) or configuration settings (`DRIVE_PAST_WIRE <dist>`, `REVERSING_DISTANCE <dist>`, `GARAGE_ENABLED <ON/OFF>`, `RADAR_ENABLED <ON/OFF>`, `ECO_MODE <ON/OFF>`) to `<MOWER_BASE_TOPIC>/command` to control the mower
 - Publish `BRIDGE_PAUSE` to `<MOWER_BASE_TOPIC>/command` before opening the official Gardena app for an extended session, and `BRIDGE_RESUME` afterwards, to guarantee no BLE conflicts (this stops/starts the bridge polling loop)
 - Publish a duration in seconds to `<MOWER_BASE_TOPIC>/custom_value` to set a custom manual override mow duration (default is 3600), which can be read back from `<MOWER_BASE_TOPIC>/state/custom_value`
 
@@ -249,7 +249,21 @@ Example status payload:
   "totalSearchingTime": 120,
   "numberOfCollisions": 42,
   "numberOfChargingCycles": 150,
-  "cuttingBladeUsageTime": 9800
+  "cuttingBladeUsageTime": 9800,
+  "collision": false,
+  "lift": false,
+  "pitch": 0,
+  "roll": 1,
+  "zAcceleration": 980,
+  "upsideDown": false,
+  "mowerTemperature": 22,
+  "garageEnabled": "ON",
+  "radarEnabled": "OFF",
+  "radarAvailable": "OFF",
+  "ecoMode": "ON",
+  "drivePastWire": 30,
+  "reversingDistance": 600,
+  "spotCuttingState": 0
 }
 ```
 
@@ -285,6 +299,13 @@ If you're installing the official `automower-ble` package instead of the fork an
 - **Mower accepts `MOW` but doesn't move**: check that the boundary wire/charging station isn't in a power-saving mode with the signal disabled — the mower will accept the BLE command but refuses to physically move without an active guide wire signal.
 - **Duplicate/garbled log lines right after a restart**: usually two processes briefly overlapping during a fast manual restart — this is what `TimeoutStopSec`/`KillMode=mixed` in the service file above prevents in normal operation.
 - **Can't connect from the official app while the bridge runs**: send `BRIDGE_PAUSE` to the command topic before opening the app.
+
+## Logging & Debugging
+
+You can configure logging verbosity and destinations using environment variables in `mower.env` (or docker environment):
+
+- **`LOG_LEVEL`** (default `INFO`): Can be set to `DEBUG`, `INFO`, `WARNING`, or `ERROR`. Setting this to `DEBUG` enables verbose logging of all skipped optional commands, as well as raw GATT discoveries, write/read BLE operations, and mower response packets from the underlying protocol library.
+- **`LOG_FILE`**: Set this to a path (e.g., `/app/logs/mower.log` or `/var/log/mower.log`) to mirror log output to a file. In Docker, you can mount a local directory (e.g., `- ./logs:/app/logs`) and configure `LOG_FILE=/app/logs/mower.log`.
 
 ## Credits
 

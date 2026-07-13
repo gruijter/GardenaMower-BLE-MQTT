@@ -104,6 +104,10 @@ MOWER_ADDRESS=AA:BB:CC:DD:EE:FF
 
 # The PIN configured on your mower (same PIN used in the official Gardena app)
 MOWER_PIN=1234
+
+# Optional logging settings (LOG_LEVEL can be DEBUG, INFO, WARNING, ERROR)
+# LOG_LEVEL=INFO
+# LOG_FILE=/app/logs/mower.log
 ```
 
 **Finding your MAC address**, if you don't already know it:
@@ -159,9 +163,9 @@ From now on, this bonding is remembered by the host — you will **not** need to
 ## Part 4 — Connect it to Homey
 
 In Homey, using the **MQTT Client** or **MQTT Hub** app:
-- Subscribe to `<MOWER_BASE_TOPIC>/status` — a JSON payload with battery, charging state, mower state/activity, next scheduled start, schedule, RSSI, and more
-- Publish `MOW` or `PARK` to `<MOWER_BASE_TOPIC>/command` to control the mower
-- Publish `PAUSE` to that same command topic before opening the official Gardena app for an extended session (e.g. a firmware update), and `RESUME` afterwards — this guarantees no BLE conflict between the bridge and the app
+- Subscribe to `<MOWER_BASE_TOPIC>/status` — a JSON payload with battery, charging state, mower state/activity, next scheduled start, schedule, RSSI, orientation/sensors, and more
+- Publish `MOW`, `PARK`, `PARK_PERMANENTLY`, `RESUME_SCHEDULE`, `SPOT_CUT`, `STOP_SPOT_CUT`, or configuration commands (like `DRIVE_PAST_WIRE <dist>`, `REVERSING_DISTANCE <dist>`, `GARAGE_ENABLED <ON/OFF>`, `RADAR_ENABLED <ON/OFF>`, `ECO_MODE <ON/OFF>`, `GENERATE_LOOP_SIGNAL`) to `<MOWER_BASE_TOPIC>/command` to control the mower
+- Publish `BRIDGE_PAUSE` to that same command topic before opening the official Gardena app for an extended session (e.g. a firmware update), and `BRIDGE_RESUME` afterwards — this guarantees no BLE conflict between the bridge and the app
 
 Example status payload:
 ```json
@@ -175,7 +179,21 @@ Example status payload:
   "Model": "SILENO Minimo 250",
   "MowerName": "SILENO minimo 250",
   "Schedule": "Tue,Fri 15:00 (1h30m)",
-  "RSSI": -80
+  "RSSI": -80,
+  "collision": false,
+  "lift": false,
+  "pitch": 0,
+  "roll": 1,
+  "zAcceleration": 980,
+  "upsideDown": false,
+  "mowerTemperature": 22,
+  "garageEnabled": "ON",
+  "radarEnabled": "OFF",
+  "radarAvailable": "OFF",
+  "ecoMode": "ON",
+  "drivePastWire": 30,
+  "reversingDistance": 600,
+  "spotCuttingState": 0
 }
 ```
 

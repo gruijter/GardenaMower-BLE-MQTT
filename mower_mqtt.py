@@ -49,11 +49,23 @@ from automower_ble.error_codes import ErrorCodes
 # ----------------------------
 _log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
 _log_level = getattr(logging, _log_level_str, logging.INFO)
+_log_file = os.getenv("LOG_FILE")
+
+_handlers = [logging.StreamHandler(sys.stdout)]
+if _log_file:
+    try:
+        _log_dir = os.path.dirname(_log_file)
+        if _log_dir:
+            os.makedirs(_log_dir, exist_ok=True)
+        _handlers.append(logging.FileHandler(_log_file, encoding="utf-8"))
+    except Exception as _e:
+        sys.stderr.write(f"Failed to initialize file logger for {_log_file}: {_e}\n")
 
 logging.basicConfig(
     level=_log_level,
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=_handlers,
 )
 LOG = logging.getLogger("mower_mqtt")
 
