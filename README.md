@@ -10,14 +10,14 @@ This allows you to monitor and control your mower from **Homey** (or Home Assist
 
 To install and run the bridge, please refer to one of the dedicated installation documents:
 
-* 🐳 **[INSTALL-DOCKER.md](file:///home/robin/HomeyDev/GardenaMower-BLE-MQTT/INSTALL-DOCKER.md)** (Docker Installation Guide - Recommended): The fastest way to get up and running inside a Docker container.
-* ⚙️ **[INSTALL-NATIVE.md](file:///home/robin/HomeyDev/GardenaMower-BLE-MQTT/INSTALL-NATIVE.md)** (Native Installation Guide): Run the script natively as a systemd service directly on your host system (e.g. Raspberry Pi OS).
+* 🐳 **[INSTALL-DOCKER.md](INSTALL-DOCKER.md)** (Docker Installation Guide - Recommended): The fastest way to get up and running inside a Docker container.
+* ⚙️ **[INSTALL-NATIVE.md](INSTALL-NATIVE.md)** (Native Installation Guide): Run the script natively as a systemd service directly on your host system (e.g. Raspberry Pi OS).
 
 ---
 
 ## MQTT Interface Reference
 
-The bridge uses the mower's **Bluetooth MAC address** (from `MOWER_ADDRESS` in config) as the unique device identifier in all MQTT topics. Colons are replaced with underscores, e.g. `AA:BB:CC:DD:EE:FF` → `AA_BB_CC_DD_EE_FF`. This means topics are always predictable from config, and the bridge starts immediately without a BLE pre-connection.
+The bridge uses the mower's **Bluetooth MAC address** as the unique device identifier in all MQTT topics. Colons are replaced with underscores, e.g. `AA:BB:CC:DD:EE:FF` → `AA_BB_CC_DD_EE_FF`.
 
 ### Topics Structure
 
