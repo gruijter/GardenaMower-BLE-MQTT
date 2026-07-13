@@ -734,11 +734,92 @@ async def send_command(mower: Mower, cmd: str, args: Optional[list] = None) -> N
 # Home Assistant discovery logic removed for exclusive Homey use.
 
 
+def save_mac_to_env(mac_address: str):
+    """Attempt to persistently write the discovered MAC address to mower.env if it exists."""
+    for path in ("mower.env", "/app/mower.env"):
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                
+                updated = False
+                new_lines = []
+                for line in lines:
+                    if line.strip().startswith("MOWER_ADDRESS=") or line.strip().startswith("# MOWER_ADDRESS="):
+                        new_lines.append(f"MOWER_ADDRESS={mac_address}\n")
+                        updated = True
+                    else:
+                        new_lines.append(line)
+                
+                if not updated:
+                    new_lines.append(f"\nMOWER_ADDRESS={mac_address}\n")
+                
+                with open(path, "w", encoding="utf-8") as f:
+                    f.writelines(new_lines)
+                LOG.info("Persistently saved autodiscovered MAC address to %s", path)
+                return
+            except Exception as e:
+                LOG.warning("Could not write MAC address to %s: %s", path, e)
+
+
+async def discover_mower_mac() -> Optional[str]:
+    """Scan for a nearby mower and return its MAC address if found."""
+    LOG.info("Starting BLE scan to discover mower...")
+    mower_uuid = "98bd0001-0b0e-421a-84e5-ddbf75dc6de4"
+    discovered = {}
+
+    def _detect(device, adv_data):
+        is_mower = (
+            mower_uuid in adv_data.service_uuids
+            or (device.name and any(p in device.name.upper() for p in ["SILENO", "AUTOMOWER", "GARDENA"]))
+        )
+        if is_mower and "address" not in discovered:
+            discovered["address"] = device.address
+            discovered["name"] = device.name or "Unknown Mower"
+
+    scanner = BleakScanner(_detect)
+    await scanner.start()
+    for _ in range(150):  # scan up to ~15s
+        if "address" in discovered:
+            break
+        await asyncio.sleep(0.1)
+    await scanner.stop()
+
+    if "address" in discovered:
+        LOG.info("Autodiscovered mower: %s at %s ✅", discovered["name"], discovered["address"])
+        return discovered["address"]
+    return None
+
+
 # ----------------------------
 # Main Loop
 # ----------------------------
 async def main() -> None:
     global custom_mow_duration, bridge_paused
+
+    # Resolve MAC address if not configured or using placeholder
+    is_placeholder = (
+        not CFG.mower_address
+        or CFG.mower_address.strip() == ""
+        or CFG.mower_address.upper() in ("00:00:00:00:00:00", "AA:BB:CC:DD:EE:FF")
+    )
+    if is_placeholder:
+        LOG.info("MOWER_ADDRESS not set or using placeholder. Initiating autodiscovery...")
+        while not shutdown_event.is_set():
+            discovered_mac = await discover_mower_mac()
+            if discovered_mac:
+                CFG.mower_address = discovered_mac
+                save_mac_to_env(discovered_mac)
+                break
+            LOG.warning("Mower discovery failed, retrying in 10 seconds...")
+            for _ in range(10):
+                if shutdown_event.is_set():
+                    break
+                await asyncio.sleep(1)
+                watchdog_reset()
+
+    if shutdown_event.is_set():
+        return
 
     static_info: Dict[str, Any] = {}
     mower_lock = asyncio.Lock()

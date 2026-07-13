@@ -105,7 +105,8 @@ MOWER_BASE_TOPIC=mower_ble
 # How often (seconds) to poll the mower. 60 is a sensible default.
 MOWER_POLL=60
 
-# Your mower's Bluetooth MAC address
+# Your mower's Bluetooth MAC address.
+# Leave blank or set to AA:BB:CC:DD:EE:FF to enable BLE autodiscovery (detects the first nearby mower).
 MOWER_ADDRESS=AA:BB:CC:DD:EE:FF
 
 # The PIN configured on your mower (same PIN used in the official Gardena app)
@@ -118,7 +119,12 @@ MOWER_PIN=1234
 
 ### Finding your mower's details
 
-- **MAC address**: check the official Gardena Bluetooth app's device info screen, or scan for it:
+- **MAC address**: The bridge can **autodiscover** this if you leave `MOWER_ADDRESS` blank or set to `AA:BB:CC:DD:EE:FF`. It will persistently save the found address back to the `mower.env` file. 
+
+  > [!NOTE]
+  > This `mower.env` file is mounted into the container by default in `docker-compose.yml` (`- ./mower.env:/app/mower.env`), allowing the bridge to write the discovered MAC address back to your host filesystem automatically.
+
+  Alternatively, you can check the official Gardena Bluetooth app's device info screen, or scan for it manually:
   ```bash
   bluetoothctl scan on
   ```
