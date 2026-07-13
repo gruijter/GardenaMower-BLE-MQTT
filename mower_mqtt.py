@@ -47,14 +47,22 @@ from automower_ble.error_codes import ErrorCodes
 # ----------------------------
 # Logging
 # ----------------------------
+_log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
+_log_level = getattr(logging, _log_level_str, logging.INFO)
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=_log_level,
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 LOG = logging.getLogger("mower_mqtt")
 
-logging.getLogger("automower_ble.mower").setLevel(logging.ERROR)
+if _log_level == logging.DEBUG:
+    logging.getLogger("automower_ble.mower").setLevel(logging.DEBUG)
+    logging.getLogger("automower_ble.protocol").setLevel(logging.DEBUG)
+else:
+    logging.getLogger("automower_ble.mower").setLevel(logging.ERROR)
+    logging.getLogger("automower_ble.protocol").setLevel(logging.WARNING)
 
 # ----------------------------
 # Configuration
@@ -177,21 +185,29 @@ async def connect_mower() -> Tuple[Optional[Mower], Optional[int]]:
         return None, None
 
 
-async def safe_mower_command(mower: Mower, cmd: str, **kwargs) -> Any:
+async def safe_mower_command(mower: Mower, cmd: str, optional: bool = False, **kwargs) -> Any:
     """Run mower command safely with timeout + retries."""
-    retries = 3
+    retries = 1 if optional else 3
     for attempt in range(1, retries + 1):
         try:
             result = await asyncio.wait_for(mower.command(cmd, **kwargs), timeout=10)
             watchdog_reset()
             return result
         except asyncio.TimeoutError:
-            LOG.warning("Mower command %s timed out (attempt %d/%d)", cmd, attempt, retries)
+            if optional:
+                LOG.debug("Optional mower command %s timed out", cmd)
+            else:
+                LOG.warning("Mower command %s timed out (attempt %d/%d)", cmd, attempt, retries)
         except Exception as e:
-            LOG.error("Mower command %s failed: %s (attempt %d/%d)", cmd, e, attempt, retries)
-        await asyncio.sleep(2 * attempt)  # backoff
+            if optional:
+                LOG.debug("Optional mower command %s failed: %s", cmd, e)
+            else:
+                LOG.error("Mower command %s failed: %s (attempt %d/%d)", cmd, e, attempt, retries)
+        if attempt < retries:
+            await asyncio.sleep(2 * attempt)  # backoff
 
-    LOG.error("Mower command %s unresponsive after %d attempts, skipping.", cmd, retries)
+    if not optional:
+        LOG.error("Mower command %s unresponsive after %d attempts, skipping.", cmd, retries)
     return None
 
 
@@ -206,49 +222,49 @@ async def get_static_info(mower: Mower) -> Dict[str, Any]:
         if model:
             info["Model"] = model
 
-        serial = await safe_mower_command(mower, "GetSerialNumber")
+        serial = await safe_mower_command(mower, "GetSerialNumber", optional=True)
         if serial is not None:
             info["SerialNumber"] = str(serial)
 
-        name = await safe_mower_command(mower, "GetUserMowerNameAsAsciiString")
+        name = await safe_mower_command(mower, "GetUserMowerNameAsAsciiString", optional=True)
         if name:
             info["MowerName"] = name
 
         # Query and expose new static info commands if supported
-        sw_boot = await safe_mower_command(mower, "GetSwVersionStringBoot")
+        sw_boot = await safe_mower_command(mower, "GetSwVersionStringBoot", optional=True)
         if sw_boot is not None:
             info["SwVersionBoot"] = sw_boot
-        sw_appl = await safe_mower_command(mower, "GetSwVersionStringAppl")
+        sw_appl = await safe_mower_command(mower, "GetSwVersionStringAppl", optional=True)
         if sw_appl is not None:
             info["SwVersionAppl"] = sw_appl
-        sw_sub = await safe_mower_command(mower, "GetSwVersionStringSub")
+        sw_sub = await safe_mower_command(mower, "GetSwVersionStringSub", optional=True)
         if sw_sub is not None:
             info["SwVersionSub"] = sw_sub
         
-        prod_time = await safe_mower_command(mower, "GetProductionTime")
+        prod_time = await safe_mower_command(mower, "GetProductionTime", optional=True)
         if prod_time is not None:
             try:
                 info["ProductionTime"] = dt.datetime.fromtimestamp(int(prod_time), tz=dt.timezone.utc).isoformat()
             except Exception as e:
                 LOG.debug("Failed to parse production time %s: %s", prod_time, e)
         
-        node_ipr_id = await safe_mower_command(mower, "GetNodeIprId")
+        node_ipr_id = await safe_mower_command(mower, "GetNodeIprId", optional=True)
         if node_ipr_id is not None:
             info["NodeIprId"] = node_ipr_id
-        husqvarna_id = await safe_mower_command(mower, "GetHusqvarnaId")
+        husqvarna_id = await safe_mower_command(mower, "GetHusqvarnaId", optional=True)
         if husqvarna_id is not None:
             info["HusqvarnaId"] = husqvarna_id
-        hw_serial = await safe_mower_command(mower, "GetHwSerialNumber")
+        hw_serial = await safe_mower_command(mower, "GetHwSerialNumber", optional=True)
         if hw_serial is not None:
             info["HwSerialNumber"] = hw_serial
-        hw_revision = await safe_mower_command(mower, "GetHardwareRevision")
+        hw_revision = await safe_mower_command(mower, "GetHardwareRevision", optional=True)
         if hw_revision is not None:
             info["HardwareRevision"] = hw_revision
-        supported_accessories = await safe_mower_command(mower, "GetSupportedAccessories")
+        supported_accessories = await safe_mower_command(mower, "GetSupportedAccessories", optional=True)
         if supported_accessories is not None:
             info["SupportedAccessories"] = supported_accessories
 
-        num_tasks = await safe_mower_command(mower, "GetNumberOfTasks")
+        num_tasks = await safe_mower_command(mower, "GetNumberOfTasks", optional=True)
         if num_tasks:
             day_keys = [
                 "useOnMonday", "useOnTuesday", "useOnWednesday", "useOnThursday",
@@ -258,7 +274,7 @@ async def get_static_info(mower: Mower) -> Dict[str, Any]:
             schedule_parts = []
             raw_tasks = []
             for task_id in range(num_tasks):
-                task = await safe_mower_command(mower, "GetTask", taskId=task_id)
+                task = await safe_mower_command(mower, "GetTask", optional=True, taskId=task_id)
                 if not task:
                     continue
                 raw_tasks.append(task)
@@ -292,7 +308,7 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
         state = await safe_mower_command(mower, "GetState")
         activity = await safe_mower_command(mower, "GetActivity")
         next_start = await safe_mower_command(mower, "GetNextStartTime")
-        last_error = await safe_mower_command(mower, "GetMessage", messageId=0)
+        last_error = await safe_mower_command(mower, "GetMessage", optional=True, messageId=0)
 
         if None in (battery, charging, state, activity, next_start):
             LOG.error("One or more essential mower commands failed, skipping this poll cycle")
@@ -328,7 +344,7 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
         # Calculate remaining mow time
         remaining_mow_seconds = 0
         if activity_name == "MOWING":
-            override = await safe_mower_command(mower, "GetOverride")
+            override = await safe_mower_command(mower, "GetOverride", optional=True)
             if override and int(override.get("startTime") or 0) > 0 and int(override.get("duration") or 0) > 0:
                 # Manual override mow: compute from override startTime + duration
                 start_ts = int(override["startTime"])
@@ -358,7 +374,7 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
         status["RemainingMowTime"] = remaining_mow_seconds
 
         # Query and expose new dynamic status / sensor data if supported
-        realtime_sensor = await safe_mower_command(mower, "GetRealtimeSensorData")
+        realtime_sensor = await safe_mower_command(mower, "GetComboardSensorData", optional=True)
         if realtime_sensor is not None:
             status.update(
                 collision=bool(realtime_sensor.get("collision")),
@@ -370,28 +386,28 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
                 mowerTemperature=realtime_sensor.get("mowerTemperature")
             )
             
-        garage_enabled = await safe_mower_command(mower, "GetGarageEnabled")
+        garage_enabled = await safe_mower_command(mower, "GetGarageEnabled", optional=True)
         if garage_enabled is not None:
             status["garageEnabled"] = "ON" if garage_enabled else "OFF"
             
-        radar = await safe_mower_command(mower, "GetAntiCollisionRadar")
+        radar = await safe_mower_command(mower, "GetAntiCollisionRadar", optional=True)
         if radar is not None:
             status["radarEnabled"] = "ON" if radar.get("enabled") else "OFF"
             status["radarAvailable"] = "ON" if radar.get("available") else "OFF"
             
-        eco_mode = await safe_mower_command(mower, "GetChargingStationLoopSignalGeneration")
+        eco_mode = await safe_mower_command(mower, "GetChargingStationLoopSignalGeneration", optional=True)
         if eco_mode is not None:
             status["ecoMode"] = "ON" if eco_mode else "OFF"
             
-        drive_past_wire = await safe_mower_command(mower, "GetDrivePastWire")
+        drive_past_wire = await safe_mower_command(mower, "GetDrivePastWire", optional=True)
         if drive_past_wire is not None:
             status["drivePastWire"] = drive_past_wire
             
-        reversing_distance = await safe_mower_command(mower, "GetReversingDistance")
+        reversing_distance = await safe_mower_command(mower, "GetReversingDistance", optional=True)
         if reversing_distance is not None:
             status["reversingDistance"] = reversing_distance
             
-        spot_cutting_state = await safe_mower_command(mower, "GetSpotCuttingState")
+        spot_cutting_state = await safe_mower_command(mower, "GetSpotCuttingState", optional=True)
         if spot_cutting_state is not None:
             status["spotCuttingState"] = spot_cutting_state
 
