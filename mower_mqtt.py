@@ -177,6 +177,7 @@ async def connect_mower() -> Tuple[Optional[Mower], Optional[int]]:
                 break
             await asyncio.sleep(0.1)
         await scanner.stop()
+        await asyncio.sleep(1.0)  # Let BLE adapter settle after scanning
 
         device = found_device.get("device")
         if not device:
@@ -188,7 +189,10 @@ async def connect_mower() -> Tuple[Optional[Mower], Optional[int]]:
             return None, None
 
         mower = Mower(1197489078, CFG.mower_address, CFG.mower_pin)
-        await mower.connect(device)
+        res = await mower.connect(device)
+        if res != 0:
+            LOG.error("BLE connection handshake failed (result: %s)", res)
+            return None, None
         rssi = rssi_holder.get("rssi")
         LOG.info("BLE connection established ✅ (RSSI: %s dBm)", rssi)
         return mower, rssi
@@ -784,6 +788,7 @@ async def discover_mower_mac() -> Optional[str]:
             break
         await asyncio.sleep(0.1)
     await scanner.stop()
+    await asyncio.sleep(1.0)  # Let BLE adapter settle after scanning
 
     if "address" in discovered:
         LOG.info("Autodiscovered mower: %s at %s ✅", discovered["name"], discovered["address"])
