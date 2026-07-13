@@ -1,8 +1,8 @@
 # GardenaMower-BLE-MQTT
 
-A Raspberry Pi bridge that connects a **Gardena Bluetooth (BLE) robotic mower** (such as Sileno Minimo, Sileno City, and similar models using the same BLE protocol) to **MQTT**. 
+A bridge that connects a **Gardena or Husqvarna robotic mower with Bluetooth (BLE)** to **MQTT**. Supported models include Gardena Sileno Minimo, Sileno City, and similar — and because Husqvarna and Gardena are the same parent company sharing the same BLE protocol, many **Husqvarna Automower** models are compatible too.
 
-This allows you to monitor and control your mower from **Homey** (or Home Assistant, or any other MQTT-capable smart home platform) without any cloud accounts or Gardena Smart Gateways.
+This allows you to monitor and control your mower from **Homey** (or Home Assistant, or any other MQTT-capable smart home platform) without any cloud accounts or Gardena/Husqvarna Smart Gateways.
 
 ---
 
@@ -20,13 +20,25 @@ To install and run the bridge, please refer to one of the dedicated installation
 The bridge uses the mower's **Bluetooth MAC address** (from `MOWER_ADDRESS` in config) as the unique device identifier in all MQTT topics. Colons are replaced with underscores, e.g. `AA:BB:CC:DD:EE:FF` → `AA_BB_CC_DD_EE_FF`. This means topics are always predictable from config, and the bridge starts immediately without a BLE pre-connection.
 
 ### Topics Structure
-* **Status**: `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/status`
-* **Command**: `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/command`
-* **Availability**: `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/availability`
+
+| Topic | Retained | Description |
+|---|---|---|
+| `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/status` | ✅ yes | Full JSON status payload — cached by broker, delivered immediately on subscribe |
+| `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/command` | no | Publish commands here to control the mower |
+| `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/availability` | ✅ yes | Bridge status: `online` / `offline`. Uses MQTT Last Will Testament — broker auto-publishes `offline` on crash |
+| `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/mower` | ✅ yes | Mower reachability: `online` when last BLE poll succeeded, `offline` after 2 consecutive failed polls |
+
+**Combined state interpretation:**
+
+| `availability` | `mower` | Meaning |
+|---|---|---|
+| `online` | `online` | Bridge running ✅, mower responding ✅ |
+| `online` | `offline` | Bridge running ✅, mower unreachable ⚠️ |
+| `offline` | `offline` | Bridge is down ❌ |
 
 ---
 
-## Maximum Output Payload (Status JSON)
+## Output Payload (Status JSON)
 
 Below is the complete list of keys that can be published in the JSON status payload. Availability of specific sensor values (like pitch/roll or radar) depends on your specific mower hardware model.
 
@@ -100,9 +112,11 @@ Below is the complete list of keys that can be published in the JSON status payl
 
 ---
 
-## Maximum Input Commands
+## Input Commands
 
 Publish any of the following raw strings to `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/command` to trigger the corresponding operation.
+
+> **Note**: Not all commands are supported by every mower model. Commands that target hardware not present on your mower (e.g. `RADAR_ENABLED` on a model without a collision radar) are accepted by the bridge but silently ignored or return an error from the mower. The status JSON reflects which features are actually available on your specific device.
 
 ### Mower Activity & Scheduling Commands
 * **`MOW`**: Logs in with operator PIN, sets mode to AUTO, overrides standard schedule using custom duration, and issues physical start trigger.

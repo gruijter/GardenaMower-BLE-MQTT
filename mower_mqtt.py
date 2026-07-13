@@ -817,6 +817,7 @@ async def main() -> None:
     mower_id = CFG.mower_address.replace(":", "_").upper()
     mower_base_topic = f"{CFG.mqtt_base_topic}/{mower_id}"
     availability_topic = f"{mower_base_topic}/availability"
+    mower_topic = f"{mower_base_topic}/mower"
     LOG.info("MQTT device topic: %s", mower_base_topic)
 
     # Start the watchdog heartbeat task
@@ -824,11 +825,19 @@ async def main() -> None:
 
     while not shutdown_event.is_set():
         try:
+            # LWT: broker auto-publishes 'offline' on ungraceful disconnect/crash
+            lwt = aiomqtt.Will(
+                topic=availability_topic,
+                payload="offline",
+                qos=1,
+                retain=True,
+            )
             async with aiomqtt.Client(
                 hostname=CFG.mqtt_broker,
                 port=CFG.mqtt_port,
                 username=CFG.mqtt_username,
                 password=CFG.mqtt_password,
+                will=lwt,
             ) as client:
 
                 await client.publish(availability_topic, "online", retain=True)
@@ -836,7 +845,12 @@ async def main() -> None:
 
                 await client.subscribe(f"{mower_base_topic}/command")
                 LOG.info("Subscribed to %s/command", mower_base_topic)
+
+                consecutive_poll_failures = 0
+                MOWER_OFFLINE_AFTER = 2  # mark mower offline after this many consecutive failed polls
+
                 async def status_loop():
+                    nonlocal consecutive_poll_failures
                     while not shutdown_event.is_set():
                         if bridge_paused:
                             await asyncio.sleep(5)
@@ -845,13 +859,29 @@ async def main() -> None:
 
                         status = await run_poll_cycle()
                         if status:
+                            consecutive_poll_failures = 0
                             try:
+                                # retain=True: broker caches last value so Homey gets
+                                # it immediately on subscribe without waiting for next poll
                                 await client.publish(
-                                    f"{mower_base_topic}/status", json.dumps(status)
+                                    f"{mower_base_topic}/status", json.dumps(status), retain=True
                                 )
+                                await client.publish(mower_topic, "online", retain=True)
                             except Exception:
                                 LOG.exception("MQTT publish error")
                                 break
+                        else:
+                            consecutive_poll_failures += 1
+                            if consecutive_poll_failures >= MOWER_OFFLINE_AFTER:
+                                try:
+                                    await client.publish(mower_topic, "offline", retain=True)
+                                    LOG.warning(
+                                        "Mower unreachable for %d consecutive polls, marking offline",
+                                        consecutive_poll_failures,
+                                    )
+                                except Exception:
+                                    pass
+
                         await asyncio.sleep(CFG.poll_interval)
                         watchdog_reset()
 
@@ -882,6 +912,7 @@ async def main() -> None:
             password=CFG.mqtt_password,
         ) as client:
             await client.publish(availability_topic, "offline", retain=True)
+            await client.publish(mower_topic, "offline", retain=True)
 
 
 # ----------------------------
