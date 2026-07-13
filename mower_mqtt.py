@@ -430,7 +430,8 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
             totalSearchingTime=data.get("totalSearchingTime", 0),
             numberOfCollisions=data.get("numberOfCollisions", 0),
             numberOfChargingCycles=data.get("numberOfChargingCycles", 0),
-            cuttingBladeUsageTime=data.get("cuttingBladeUsageTime", 0)
+            cuttingBladeUsageTime=data.get("cuttingBladeUsageTime", 0),
+            customMowDuration=custom_mow_duration
         )
 
         if mower_local_time is not None:
@@ -614,6 +615,7 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
 
 async def send_command(mower: Mower, cmd: str, args: Optional[list] = None) -> None:
     """Send control commands to the mower. Raises on failure so the caller can react."""
+    global custom_mow_duration
     cmd = cmd.upper()
     if cmd == "MOW":
         logged_in = await safe_mower_command(mower, "IsOperatorLoggedIn")
@@ -695,6 +697,19 @@ async def send_command(mower: Mower, cmd: str, args: Optional[list] = None) -> N
             LOG.info("Set eco mode (loop signal generation) to %s ✅", enabled)
         else:
             LOG.warning("ECO_MODE requires ON/OFF argument")
+    elif cmd == "MOW_DURATION":
+        if args:
+            try:
+                new_duration = int(args[0])
+                if new_duration < 0 or new_duration > 28800:
+                    LOG.warning("MOW_DURATION out of range (0–28800 seconds): %d", new_duration)
+                    return
+                custom_mow_duration = new_duration
+                LOG.info("Set custom mow duration to %d seconds ✅", custom_mow_duration)
+            except ValueError:
+                LOG.error("Invalid duration for MOW_DURATION: %s", args[0])
+        else:
+            LOG.warning("MOW_DURATION requires a duration in seconds (e.g. MOW_DURATION 3600)")
     elif cmd == "GENERATE_LOOP_SIGNAL":
         await mower.command("GenerateLoopSignal")
         LOG.info("Generated new loop signal ✅")
@@ -726,9 +741,6 @@ async def main() -> None:
     global custom_mow_duration, bridge_paused
 
     static_info: Dict[str, Any] = {}
-    availability_topic = f"{CFG.mqtt_base_topic}/availability"
-    asyncio.create_task(heartbeat_task(availability_topic))
-
     mower_lock = asyncio.Lock()
 
     async def with_mower_connection(action: Callable[[Mower, Optional[int]], Awaitable[Any]]) -> Any:
@@ -799,6 +811,40 @@ async def main() -> None:
                     await asyncio.sleep(5)
         LOG.error("Command '%s' failed after retry", payload)
 
+    # Resolve mower serial number before establishing MQTT connection and heartbeat
+    serial_number = None
+    LOG.info("Initializing connection to mower to retrieve serial number...")
+    while not shutdown_event.is_set():
+        try:
+            async def _init_static(mower: Mower, _rssi: Optional[int]) -> Dict[str, Any]:
+                return await get_static_info(mower)
+
+            static_info = await with_mower_connection(_init_static)
+            serial_number = static_info.get("serialNumber")
+            if serial_number:
+                LOG.info("Mower serial number retrieved successfully: %s", serial_number)
+                break
+            else:
+                LOG.warning("Could not retrieve serial number from static info, retrying in 10s...")
+        except Exception as e:
+            LOG.warning("Failed to connect to mower on startup to retrieve serial number: %s. Retrying in 10s...", e)
+
+        for _ in range(10):
+            if shutdown_event.is_set():
+                break
+            await asyncio.sleep(1)
+            watchdog_reset()
+
+    if shutdown_event.is_set() or not serial_number:
+        LOG.info("Shutdown requested before serial number could be retrieved.")
+        return
+
+    mower_base_topic = f"{CFG.mqtt_base_topic}/{serial_number}"
+    availability_topic = f"{mower_base_topic}/availability"
+
+    # Start the watchdog heartbeat task with the correct availability topic
+    asyncio.create_task(heartbeat_task(availability_topic))
+
     while not shutdown_event.is_set():
         try:
             async with aiomqtt.Client(
@@ -811,17 +857,8 @@ async def main() -> None:
                 await client.publish(availability_topic, "online", retain=True)
                 LOG.info("MQTT connected ✅")
 
-                await client.subscribe(f"{CFG.mqtt_base_topic}/command")
-                LOG.info("Subscribed to %s/command", CFG.mqtt_base_topic)
-
-                await client.subscribe(f"{CFG.mqtt_base_topic}/custom_value")
-                LOG.info("Subscribed to %s/custom_value", CFG.mqtt_base_topic)
-
-                await client.publish(
-                    f"{CFG.mqtt_base_topic}/state/custom_value",
-                    str(custom_mow_duration),
-                    retain=True
-                )
+                await client.subscribe(f"{mower_base_topic}/command")
+                LOG.info("Subscribed to %s/command", mower_base_topic)
                 async def status_loop():
                     while not shutdown_event.is_set():
                         if bridge_paused:
@@ -833,7 +870,7 @@ async def main() -> None:
                         if status:
                             try:
                                 await client.publish(
-                                    f"{CFG.mqtt_base_topic}/status", json.dumps(status)
+                                    f"{mower_base_topic}/status", json.dumps(status)
                                 )
                             except Exception:
                                 LOG.exception("MQTT publish error")
@@ -848,33 +885,6 @@ async def main() -> None:
                         break
                     topic = msg.topic.value
                     payload = msg.payload.decode().strip()
-                    if topic.endswith("/custom_value"):
-                        LOG.info("MQTT custom value received: %s", payload)
-                        try:
-                            new_duration = int(payload)
-                            if new_duration < 0 or new_duration > 28800:
-                                LOG.warning("Custom value out of range: %d", new_duration)
-                                continue
-                            custom_mow_duration = new_duration
-
-                            async def _set_duration(mower: Mower, _rssi: Optional[int]) -> None:
-                                await mower.command("SetOverrideMow", duration=custom_mow_duration)
-
-                            if bridge_paused:
-                                LOG.warning("Custom value change ignored — bridge is paused.")
-                            else:
-                                await with_mower_connection(_set_duration)
-                                LOG.info("Set custom mow duration: %d seconds", custom_mow_duration)
-                                await client.publish(
-                                    f"{CFG.mqtt_base_topic}/state/custom_value",
-                                    str(custom_mow_duration),
-                                    retain=True
-                                )
-                        except ValueError:
-                            LOG.warning("Invalid custom value received: %s", payload)
-                        except Exception:
-                            LOG.exception("Failed to set custom mow duration")
-                        continue
                     if topic.endswith("/command"):
                         LOG.info("MQTT command received: %s", payload)
                         await dispatch_command(payload)
