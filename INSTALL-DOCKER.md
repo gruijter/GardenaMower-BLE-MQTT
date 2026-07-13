@@ -187,13 +187,28 @@ Example status payload:
   "zAcceleration": 980,
   "upsideDown": false,
   "mowerTemperature": 22,
+  "batteryTemperature": 25,
+  "batteryVoltage": 20.60,
+  "batteryCurrent": -6,
+  "frostSensorEnabled": "ON",
+  "sensorControlEnabled": "ON",
+  "sensorControlSensitivity": "MEDIUM",
+  "loopSignalStrength": 100,
+  "loopSignalA": 17588,
+  "loopSignalF": 15159,
+  "loopSignalGuide": -9002,
+  "tiltSensor": "Oké",
+  "collisionSensor": "Oké",
   "garageEnabled": "ON",
   "radarEnabled": "OFF",
   "radarAvailable": "OFF",
   "ecoMode": "ON",
   "drivePastWire": 30,
   "reversingDistance": 600,
-  "spotCuttingState": 0
+  "spotCuttingState": 0,
+  "SoftwarePlatform": "P005G",
+  "SoftwareVersion": "50.3",
+  "SoftwareBundle": "5995762-04C"
 }
 ```
 

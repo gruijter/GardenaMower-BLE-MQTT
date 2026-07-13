@@ -252,6 +252,36 @@ async def get_static_info(mower: Mower) -> Dict[str, Any]:
         sw_sub = await safe_mower_command(mower, "GetSwVersionStringSub", optional=True)
         if sw_sub is not None:
             info["SwVersionSub"] = sw_sub
+            
+        sw_package = await safe_mower_command(mower, "GetSoftwarePackageVersion", optional=True)
+        if sw_package is not None:
+            info["SoftwarePackageVersion"] = sw_package
+
+        # Extract Platform, Version, and Bundle details
+        sw_platform = None
+        sw_version = None
+        sw_bundle = sw_package if sw_package else None
+
+        for sw_str in [sw_appl, sw_boot]:
+            if sw_str and "_" in sw_str:
+                try:
+                    parts = sw_str.split("_")
+                    if len(parts) >= 3:
+                        platform_part = parts[1].split("-")[-1]
+                        if platform_part:
+                            sw_platform = platform_part
+                        version_part = parts[-1]
+                        if version_part:
+                            sw_version = version_part
+                except Exception:
+                    pass
+
+        if sw_platform:
+            info["SoftwarePlatform"] = sw_platform
+        if sw_version:
+            info["SoftwareVersion"] = sw_version
+        if sw_bundle:
+            info["SoftwareBundle"] = sw_bundle
         
         prod_time = await safe_mower_command(mower, "GetProductionTime", optional=True)
         if prod_time is not None:
@@ -397,6 +427,68 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
                 upsideDown=bool(realtime_sensor.get("upsideDown")),
                 mowerTemperature=realtime_sensor.get("mowerTemperature")
             )
+        else:
+            # Fallback to individual orientation pitch & roll queries if supported
+            pitch = await safe_mower_command(mower, "GetOrientationPitch", optional=True)
+            if pitch is not None:
+                status["pitch"] = pitch
+            roll = await safe_mower_command(mower, "GetOrientationRoll", optional=True)
+            if roll is not None:
+                status["roll"] = roll
+
+        # Tilt and Collision sensor status mapping based on the active error code
+        # In the Gardena app: "Tilsensor" (tilt / lift) and "Botssensor" (collision)
+        if last_error_name in ["MOWER_TILTED", "TILT_SENSOR_PROBLEM", "ALARM_MOWER_TILTED"]:
+            status["tiltSensor"] = "Tilted"
+        elif last_error_name in ["MOWER_LIFTED", "LIFTED", "ALARM_MOWER_LIFTED", "LIFTED_IN_LINK_ARM", "LIFT_SENSOR_DEFECT"]:
+            status["tiltSensor"] = "Lifted"
+        else:
+            status["tiltSensor"] = "Oké"
+
+        if last_error_name in ["COLLISION_SENSOR_ERROR", "COLLISION_SENSOR_PROBLEM_FRONT", "COLLISION_SENSOR_PROBLEM_REAR", "COLLISION_SENSOR_DEFECT"]:
+            status["collisionSensor"] = "Error"
+        else:
+            status["collisionSensor"] = "Oké"
+
+        # Frost sensor
+        frost_sensor = await safe_mower_command(mower, "GetFrostSensorEnabled", optional=True)
+        if frost_sensor is not None:
+            status["frostSensorEnabled"] = "ON" if frost_sensor else "OFF"
+            
+        # SensorControl
+        sensor_control = await safe_mower_command(mower, "GetSensorControlEnabled", optional=True)
+        if sensor_control is not None:
+            status["sensorControlEnabled"] = "ON" if sensor_control else "OFF"
+            
+        sensor_sensitivity = await safe_mower_command(mower, "GetSensorControlSensitivity", optional=True)
+        if sensor_sensitivity is not None:
+            sens_map = {0: "LOW", 1: "MEDIUM", 2: "HIGH"}
+            status["sensorControlSensitivity"] = sens_map.get(sensor_sensitivity, str(sensor_sensitivity))
+            
+        # Loop signal quality / strength / A0 / F / Guide
+        sig_quality = await safe_mower_command(mower, "GetSignalQuality", optional=True)
+        if sig_quality is not None:
+            status["loopSignalStrength"] = sig_quality.get("signalQuality")
+            status["loopSignalA"] = sig_quality.get("a0Signal")
+            status["loopSignalF"] = sig_quality.get("fSignal")
+            status["loopSignalGuide"] = sig_quality.get("guide1Signal")
+            if sig_quality.get("guide2Signal") is not None:
+                status["loopSignalGuide2"] = sig_quality.get("guide2Signal")
+            if sig_quality.get("guide3Signal") is not None:
+                status["loopSignalGuide3"] = sig_quality.get("guide3Signal")
+                
+        # Battery details (Voltage, Current, Temperature)
+        batt_volt = await safe_mower_command(mower, "GetBatteryVoltage", optional=True)
+        if batt_volt is not None:
+            status["batteryVoltage"] = round(batt_volt / 1000.0, 2)
+            
+        batt_curr = await safe_mower_command(mower, "GetBatteryCurrent", optional=True)
+        if batt_curr is not None:
+            status["batteryCurrent"] = batt_curr
+            
+        batt_temp = await safe_mower_command(mower, "GetBatteryTemperature", optional=True)
+        if batt_temp is not None:
+            status["batteryTemperature"] = batt_temp
             
         garage_enabled = await safe_mower_command(mower, "GetGarageEnabled", optional=True)
         if garage_enabled is not None:
