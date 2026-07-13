@@ -194,6 +194,8 @@ No pairing repeat needed — bonding is preserved on the host.
 cd GardenaMower-BLE-MQTT
 docker compose down
 docker rmi ghcr.io/gruijter/gardenamower-ble-mqtt:latest
+cd ..
+rm -rf GardenaMower-BLE-MQTT
 ```
 If you also want to remove the Bluetooth bonding from the host:
 ```bash

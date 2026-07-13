@@ -230,9 +230,16 @@ No pairing repeat needed — bonding is preserved on the host.
 ## Uninstalling
 
 ```bash
+# Stop and disable services
 sudo systemctl disable --now mower-mqtt.service
+sudo systemctl disable --now bt-agent.service
+
+# Remove systemd unit files
 sudo rm /etc/systemd/system/mower-mqtt.service
+sudo rm /etc/systemd/system/bt-agent.service
 sudo systemctl daemon-reload
+
+# Remove the project directory and virtual environment
 rm -rf ~/GardenaMower-BLE-MQTT
 ```
 If you also want to remove the Bluetooth bonding from the host:
