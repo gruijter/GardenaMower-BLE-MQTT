@@ -12,6 +12,7 @@ This works on **any Linux host with Bluetooth and Docker** — tested on both a 
   - A **built-in or USB Bluetooth adapter**
   - **Docker** and the **Docker Compose plugin** installed
 - Your Gardena mower already set up and working with the official Gardena Bluetooth app (so you know its **PIN**)
+- **Mower must be docked in its charging station** with power on and a valid loop signal (boundary wire active) during the initial BLE pairing process. The mower will refuse to pair if it is out on the lawn or if the loop signal is inactive.
 - An MQTT broker reachable from this host (e.g. running on Homey, Home Assistant, or standalone Mosquitto)
 - Physical access to the mower to put it in pairing mode and enter its PIN via its buttons — this is a **one-time step**, not something you'll need to repeat later
 - Homey with the **MQTT Client** or **MQTT Hub** app installed
@@ -67,9 +68,13 @@ docker rm -f <old_container_name>
 docker rmi <old_image_name>
 
 # Check no old bt-agent or bluetoothctl session is still running
+# (If you only see the grep command itself in the output, nothing is running)
 ps aux | grep -i bt-agent
 ps aux | grep -i bluetoothctl
 ```
+
+> [!NOTE]
+> When running the `ps aux | grep` commands above, if the only output line you see contains `grep --color=auto`, it means no background process is running. This is exactly what you want (a clean slate). If a process *were* running, you would see another line with the actual executable path `/usr/bin/bt-agent` or `bluetoothctl`.
 
 If you're setting this up on a host that's never touched this mower before, this whole section will simply come up empty — that's fine, just move on.
 
@@ -97,9 +102,6 @@ Configure your MQTT broker connection details, mower PIN, and settings inside `m
 
 - **MAC address**: The bridge can **autodiscover** this if you leave `MOWER_ADDRESS` blank or set to `AA:BB:CC:DD:EE:FF`. It will persistently save the found address back to the `mower.env` file. 
 
-  > [!NOTE]
-  > This `mower.env` file is mounted into the container by default in `docker-compose.yml` (`- ./mower.env:/app/mower.env`), allowing the bridge to write the discovered MAC address back to your host filesystem automatically.
-
   Alternatively, you can check the official Gardena Bluetooth app's device info screen, or scan for it manually:
   ```bash
   bluetoothctl scan on
@@ -112,6 +114,10 @@ Configure your MQTT broker connection details, mower PIN, and settings inside `m
 ## Part 3 — First run: pairing
 
 This is the only part that needs you standing next to the mower. Everything after this is fully automatic.
+
+> [!IMPORTANT]
+> **Before you start**: Ensure the mower is physically placed in its charging station, the station is powered on, and there is a valid green loop signal light (boundary wire active). The mower will refuse to pair if it is not docked or if the loop signal is inactive/powered off.
+
 
 ### 3.1 Start the container in the foreground
 
@@ -199,8 +205,12 @@ bluetoothctl remove <MOWER_MAC>
 ## Troubleshooting
 
 - **`bluetoothctl show` shows no adapter / `Powered: no`**: see [1.2](#12-confirm-bluetooth-is-working). If there's genuinely no Bluetooth hardware, use a USB BLE dongle.
-- **Pairing fails, or the container seems to hang on `pairing device...`**: the mower's pairing window (~2–3 minutes) likely closed before you entered the PIN — put it back in pairing mode and try again. Make sure you're entering the PIN on the mower's own buttons, not just relying on `MOWER_PIN` in the config.
-- **Pairing behaves oddly / mower connects instantly without asking for anything**: possible leftover bonding from a previous attempt — run `bluetoothctl remove <MOWER_MAC>` (see [1.3](#13-start-from-a-clean-slate-important-if-youve-experimented-with-this-mower-before)) and try again.
+- **Pairing fails with `[org.bluez.Error.AuthenticationFailed] Authentication Failed`**: 
+  - Verify the mower is **docked in its charging station** with power on and a valid green loop signal light. The mower's firmware will reject pairing requests immediately if it is out on the lawn or has no loop signal.
+  - Make sure the mower is in pairing mode (switch the mower's power off and back on while docked to open the 3-minute pairing window).
+  - Clear any old paired devices on the mower side (disconnect it in the official Gardena app and remove other devices if possible).
+- **Pairing fails, or the container seems to hang on `pairing device...`**: the mower's pairing window (~2–3 minutes) likely closed before you entered the PIN — power-cycle the mower to put it back in pairing mode and try again. Make sure you're entering the PIN on the mower's own buttons, not just relying on `MOWER_PIN` in the config.
+- **Pairing behaves oddly / mower connects instantly without asking for anything**: possible leftover bonding from a previous attempt — run `bluetoothctl remove <MOWER_MAC>` on the host (see [1.3](#13-start-from-a-clean-slate-important-if-youve-experimented-with-this-mower-before)) and try again.
 - **`MOW` command is accepted but the mower doesn't physically move**: check that the charging station / boundary wire isn't in a power-saving mode with its signal disabled — the mower will accept the BLE command but refuses to move without an active guide wire signal. Check this in the Gardena app.
 - **Can't connect with the official Gardena app while the bridge is running**: publish `BRIDGE_PAUSE` to the command topic first, `BRIDGE_RESUME` when you're done.
 - **Status stops updating after a while**: check `docker compose logs -f` for errors; the bridge automatically reconnects on BLE drops, but a fully unreachable mower (out of range, powered off) will simply show no new status until it's reachable again.

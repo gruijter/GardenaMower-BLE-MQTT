@@ -13,6 +13,7 @@ Tested down to a **Raspberry Pi Zero W (1st generation)**.
   - If your Pi's onboard Bluetooth turns out to be unreliable, a cheap USB BLE dongle is a good fallback there too.
 - Placement **close to the mower/charging station** — BLE range is limited, and a stable connection matters more than raw distance.
 - Your Gardena mower already set up and working with the official Gardena Bluetooth app (so you know its **PIN**)
+- **Mower must be docked in its charging station** with power on and a valid loop signal (boundary wire active) during the initial BLE pairing process. The mower will refuse to pair if it is out on the lawn or if the loop signal is inactive.
 - An MQTT broker reachable from the Pi (e.g. running on Homey, Home Assistant, or standalone Mosquitto)
 - Basic comfort with SSH and the command line
 - Homey with the **MQTT Client** or **MQTT Hub** app installed
@@ -136,6 +137,10 @@ Configure your MQTT broker connection details, mower PIN, and settings inside `m
 
 Before setting up the service, run it directly so you can see what's happening live:
 
+> [!IMPORTANT]
+> **Before you start**: Ensure the mower is physically placed in its charging station, the station is powered on, and there is a valid green loop signal light (boundary wire active). The mower will refuse to pair if it is not docked or if the loop signal is inactive/powered off.
+
+
 ```bash
 export $(grep -v '^#' mower.env | xargs)
 python3 mower_mqtt.py
@@ -240,8 +245,12 @@ bluetoothctl remove <MOWER_MAC>
 ## Troubleshooting
 
 - **`bluetoothctl show` shows no adapter / `Powered: no`**: see Part 1 step 4. If there's genuinely no Bluetooth hardware, use a USB BLE dongle.
-- **`[org.bluez.Error.AuthenticationFailed]` when pairing**: no BlueZ agent registered — make sure `bt-agent.service` (Part 2) is running.
-- **Pairing fails or times out**: the mower's pairing window (~2–3 minutes) likely closed before you connected — put it back in pairing mode and try again.
+- **`[org.bluez.Error.AuthenticationFailed]` when pairing**: 
+  - Verify the **pairing agent (`bt-agent.service`) is active** (see Part 2).
+  - Verify the mower is **docked in its charging station** with power on and a valid green loop signal light. The mower's firmware will reject pairing requests immediately if it is out on the lawn or has no loop signal.
+  - Make sure the mower is in pairing mode (switch the mower's power off and back on while docked to open the 3-minute pairing window).
+  - Clear any old paired devices on the mower side (disconnect it in the official Gardena app and remove other devices if possible).
+- **Pairing fails or times out**: the mower's pairing window (~2–3 minutes) likely closed before you connected — power-cycle the mower to put it back in pairing mode and try again. Make sure you're entering the PIN on the mower's own buttons, not just relying on `MOWER_PIN` in the config.
 - **`MOW` command is accepted but the mower doesn't physically move**: check that the charging station / boundary wire isn't in a power-saving mode with its signal disabled — the mower will accept the BLE command but refuses to move without an active guide wire signal. Check this in the Gardena app.
 - **Can't connect with the official Gardena app while the bridge is running**: publish `BRIDGE_PAUSE` to the command topic first, `BRIDGE_RESUME` when you're done.
 - **Status stops updating after a while**: check `journalctl -u mower-mqtt.service -f` for errors; the bridge automatically reconnects on BLE drops, but a fully unreachable mower (out of range, powered off) will simply show no new status until it's reachable again.

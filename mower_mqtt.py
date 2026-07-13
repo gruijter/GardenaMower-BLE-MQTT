@@ -19,7 +19,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
-VERSION = "0.2.0"
+VERSION = "0.9.0"
 
 import asyncio
 import json
@@ -57,7 +57,9 @@ if _log_file:
         _log_dir = os.path.dirname(_log_file)
         if _log_dir:
             os.makedirs(_log_dir, exist_ok=True)
-        _handlers.append(logging.FileHandler(_log_file, encoding="utf-8"))
+        from logging.handlers import RotatingFileHandler
+        # Limit log file to 1MB and keep at most 3 backups to prevent infinite disk usage
+        _handlers.append(RotatingFileHandler(_log_file, maxBytes=1024 * 1024, backupCount=3, encoding="utf-8"))
     except Exception as _e:
         sys.stderr.write(f"Failed to initialize file logger for {_log_file}: {_e}\n")
 
