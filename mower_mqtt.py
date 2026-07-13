@@ -199,6 +199,17 @@ async def connect_mower() -> Tuple[Optional[Mower], Optional[int]]:
 
 # Cache to track BLE commands that this specific mower model/firmware does not support
 UNSUPPORTED_COMMANDS = set()
+UNSUPPORTED_COMMANDS_WHITELIST = {
+    "GetComboardSensorData",
+    "GetSignalQuality",
+    "GetSupportedAccessories",
+    "GetNodeIprId",
+    "GetAntiCollisionRadar",
+    "GetFrostSensorEnabled",
+    "GetFrostSensorEnabledLegacy",
+    "GetLoopSignals",
+    "GetLoopSignalStrength"
+}
 
 
 async def safe_mower_command(mower: Mower, cmd: str, optional: bool = False, **kwargs) -> Any:
@@ -212,8 +223,8 @@ async def safe_mower_command(mower: Mower, cmd: str, optional: bool = False, **k
             result = await asyncio.wait_for(mower.command(cmd, **kwargs), timeout=10)
             watchdog_reset()
             # If an optional command successfully returns None (without timeout or exception),
-            # it means the mower responded (e.g. with INVALID_ID) but validation failed or it's unsupported.
-            if result is None and optional:
+            # and is on our whitelist of hardware/model-dependent features, cache it as unsupported.
+            if result is None and optional and cmd in UNSUPPORTED_COMMANDS_WHITELIST:
                 LOG.debug("Optional command %s returned None, caching as unsupported.", cmd)
                 UNSUPPORTED_COMMANDS.add(cmd)
             return result
@@ -226,7 +237,7 @@ async def safe_mower_command(mower: Mower, cmd: str, optional: bool = False, **k
             if optional:
                 LOG.debug("Optional mower command %s failed: %s", cmd, e)
                 # ValueError/UnicodeDecodeError indicates a permanent parser/protocol mismatch
-                if isinstance(e, (ValueError, UnicodeDecodeError)):
+                if isinstance(e, (ValueError, UnicodeDecodeError)) and cmd in UNSUPPORTED_COMMANDS_WHITELIST:
                     LOG.debug("Optional command %s failed permanently with %s, caching as unsupported.", cmd, type(e).__name__)
                     UNSUPPORTED_COMMANDS.add(cmd)
             else:
@@ -769,16 +780,6 @@ async def main() -> None:
                     str(custom_mow_duration),
                     retain=True
                 )
-
-                status = await run_poll_cycle()
-                if status:
-                    try:
-                        await client.publish(
-                            f"{CFG.mqtt_base_topic}/status", json.dumps(status)
-                        )
-                    except Exception:
-                        LOG.exception("MQTT publish error")
-
                 async def status_loop():
                     while not shutdown_event.is_set():
                         if bridge_paused:
