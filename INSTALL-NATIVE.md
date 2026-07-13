@@ -137,16 +137,21 @@ Configure your MQTT broker connection details, mower PIN, and settings inside `m
 
 Before setting up the service, run it directly so you can see what's happening live:
 
-> [!IMPORTANT]
-> **Before you start**: Ensure the mower is physically placed in its charging station, the station is powered on, and there is a valid green loop signal light (boundary wire active). The mower will refuse to pair if it is not docked or if the loop signal is inactive/powered off.
-
-
 ```bash
 export $(grep -v '^#' mower.env | xargs)
 python3 mower_mqtt.py
 ```
 
-Put the mower in Bluetooth pairing mode (check your mower's manual for the exact button sequence — pairing mode is usually indicated by specific LED symbols and **lasts only around 2–3 minutes**) and watch the log. You should see it scan, connect, pair, and start publishing status.
+### Put the mower in pairing mode & enter PIN
+
+> [!IMPORTANT]
+> **Before you start**: Ensure the mower is physically placed in its charging station, the station is powered on, and there is a valid green loop signal light (boundary wire active). The mower will refuse to pair if it is not docked or if the loop signal is inactive/powered off.
+
+1. **Restart the mower**: Turn the mower completely off and then turn it back on. 
+2. **Enter the PIN**: Enter the PIN on the mower's own buttons. The buttons map to digits as:
+   `1` = Power, `2` = Calendar, `3` = Start, `4` = Home
+
+This opens a **3-minute Bluetooth pairing window**.
 
 Watch for a line like:
 ```

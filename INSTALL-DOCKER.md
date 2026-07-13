@@ -115,9 +115,6 @@ Configure your MQTT broker connection details, mower PIN, and settings inside `m
 
 This is the only part that needs you standing next to the mower. Everything after this is fully automatic.
 
-> [!IMPORTANT]
-> **Before you start**: Ensure the mower is physically placed in its charging station, the station is powered on, and there is a valid green loop signal light (boundary wire active). The mower will refuse to pair if it is not docked or if the loop signal is inactive/powered off.
-
 
 ### 3.1 Start the container in the foreground
 
@@ -128,16 +125,16 @@ docker compose up
 
 The container includes its own Bluetooth pairing agent (`bt-agent`), which starts automatically — you don't need to set up anything separately on the host for pairing to work.
 
-### 3.2 Put the mower in pairing mode
+### 3.2 Put the mower in pairing mode & enter PIN
 
-Check your mower's manual for the exact button sequence. Pairing mode is usually indicated by specific LED symbols and **lasts only around 2–3 minutes** — do this right after starting the container so both fall within the same window.
+> [!IMPORTANT]
+> **Before you start**: Ensure the mower is physically placed in its charging station, the station is powered on, and there is a valid green loop signal light (boundary wire active). The mower will refuse to pair if it is not docked or if the loop signal is inactive/powered off.
 
-### 3.3 Enter the PIN on the mower
+1. **Restart the mower**: Turn the mower completely off and then turn it back on. 
+2. **Enter the PIN**: Enter the PIN on the mower's own buttons. The buttons map to digits as:
+   `1` = Power, `2` = Calendar, `3` = Start, `4` = Home
 
-When the log shows `pairing device...`, enter the PIN on the mower's own buttons, mapping digits to buttons as:
-`1` = Power, `2` = Calendar, `3` = Start, `4` = Home
-
-(So PIN `1234` = press Power, then Calendar, then Start, then Home.)
+This opens a **3-minute Bluetooth pairing window**.
 
 ### 3.4 Confirm success
 
