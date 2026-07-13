@@ -14,8 +14,7 @@ services:
     volumes:
       - /run/dbus:/run/dbus
       - ./mower.env:/app/mower.env
-      # Mount a local logs directory to capture persistent logs on the host
-      # - ./logs:/app/logs
+      - ./logs:/app/logs
 
     env_file:
       - mower.env

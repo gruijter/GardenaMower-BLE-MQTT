@@ -1,4 +1,5 @@
 mower.log
+logs/
 
 # Python
 .venv/
