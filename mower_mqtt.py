@@ -214,6 +214,40 @@ async def get_static_info(mower: Mower) -> Dict[str, Any]:
         if name:
             info["MowerName"] = name
 
+        # Query and expose new static info commands if supported
+        sw_boot = await safe_mower_command(mower, "GetSwVersionStringBoot")
+        if sw_boot is not None:
+            info["SwVersionBoot"] = sw_boot
+        sw_appl = await safe_mower_command(mower, "GetSwVersionStringAppl")
+        if sw_appl is not None:
+            info["SwVersionAppl"] = sw_appl
+        sw_sub = await safe_mower_command(mower, "GetSwVersionStringSub")
+        if sw_sub is not None:
+            info["SwVersionSub"] = sw_sub
+        
+        prod_time = await safe_mower_command(mower, "GetProductionTime")
+        if prod_time is not None:
+            try:
+                info["ProductionTime"] = dt.datetime.fromtimestamp(int(prod_time), tz=dt.timezone.utc).isoformat()
+            except Exception as e:
+                LOG.debug("Failed to parse production time %s: %s", prod_time, e)
+        
+        node_ipr_id = await safe_mower_command(mower, "GetNodeIprId")
+        if node_ipr_id is not None:
+            info["NodeIprId"] = node_ipr_id
+        husqvarna_id = await safe_mower_command(mower, "GetHusqvarnaId")
+        if husqvarna_id is not None:
+            info["HusqvarnaId"] = husqvarna_id
+        hw_serial = await safe_mower_command(mower, "GetHwSerialNumber")
+        if hw_serial is not None:
+            info["HwSerialNumber"] = hw_serial
+        hw_revision = await safe_mower_command(mower, "GetHardwareRevision")
+        if hw_revision is not None:
+            info["HardwareRevision"] = hw_revision
+        supported_accessories = await safe_mower_command(mower, "GetSupportedAccessories")
+        if supported_accessories is not None:
+            info["SupportedAccessories"] = supported_accessories
+
         num_tasks = await safe_mower_command(mower, "GetNumberOfTasks")
         if num_tasks:
             day_keys = [
@@ -323,6 +357,44 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
                                 break
         status["RemainingMowTime"] = remaining_mow_seconds
 
+        # Query and expose new dynamic status / sensor data if supported
+        realtime_sensor = await safe_mower_command(mower, "GetRealtimeSensorData")
+        if realtime_sensor is not None:
+            status.update(
+                collision=bool(realtime_sensor.get("collision")),
+                lift=bool(realtime_sensor.get("lift")),
+                pitch=realtime_sensor.get("pitch"),
+                roll=realtime_sensor.get("roll"),
+                zAcceleration=realtime_sensor.get("zAcceleration"),
+                upsideDown=bool(realtime_sensor.get("upsideDown")),
+                mowerTemperature=realtime_sensor.get("mowerTemperature")
+            )
+            
+        garage_enabled = await safe_mower_command(mower, "GetGarageEnabled")
+        if garage_enabled is not None:
+            status["garageEnabled"] = "ON" if garage_enabled else "OFF"
+            
+        radar = await safe_mower_command(mower, "GetAntiCollisionRadar")
+        if radar is not None:
+            status["radarEnabled"] = "ON" if radar.get("enabled") else "OFF"
+            status["radarAvailable"] = "ON" if radar.get("available") else "OFF"
+            
+        eco_mode = await safe_mower_command(mower, "GetChargingStationLoopSignalGeneration")
+        if eco_mode is not None:
+            status["ecoMode"] = "ON" if eco_mode else "OFF"
+            
+        drive_past_wire = await safe_mower_command(mower, "GetDrivePastWire")
+        if drive_past_wire is not None:
+            status["drivePastWire"] = drive_past_wire
+            
+        reversing_distance = await safe_mower_command(mower, "GetReversingDistance")
+        if reversing_distance is not None:
+            status["reversingDistance"] = reversing_distance
+            
+        spot_cutting_state = await safe_mower_command(mower, "GetSpotCuttingState")
+        if spot_cutting_state is not None:
+            status["spotCuttingState"] = spot_cutting_state
+
         if static_info:
             # Exclude internal keys (prefixed with _) from the published status
             status.update({k: v for k, v in static_info.items() if not k.startswith("_")})
@@ -340,7 +412,7 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
     return status
 
 
-async def send_command(mower: Mower, cmd: str) -> None:
+async def send_command(mower: Mower, cmd: str, args: Optional[list] = None) -> None:
     """Send control commands to the mower. Raises on failure so the caller can react."""
     cmd = cmd.upper()
     if cmd == "MOW":
@@ -361,12 +433,71 @@ async def send_command(mower: Mower, cmd: str) -> None:
     elif cmd == "PARK":
         await mower.command("SetOverrideParkUntilNextStart")
         LOG.info("Mower parked ⛔")
+    elif cmd == "PARK_PERMANENTLY":
+        await mower.command("SetMode", mode=ModeOfOperation.HOME)
+        LOG.info("Mower parked permanently ⛔")
+    elif cmd == "RESUME_SCHEDULE":
+        await mower.command("ClearOverride")
+        await mower.command("SetMode", mode=ModeOfOperation.AUTO)
+        LOG.info("Mower resumed schedule 🗓")
     elif cmd == "PAUSE":
         await mower.command("Pause")
         LOG.info("Mower paused ⏸")
     elif cmd == "RESUME":
         await mower.command("StartTrigger")
         LOG.info("Mower resumed ▶")
+    elif cmd == "SPOT_CUT":
+        LOG.info("Mower spot cut sequence initiated")
+        res = await mower.mower_spot_cut()
+        LOG.info("Mower spot cut result: %s", res)
+    elif cmd == "STOP_SPOT_CUT":
+        LOG.info("Mower stop spot cut sequence initiated")
+        res = await mower.mower_stop_spot_cut()
+        LOG.info("Mower stop spot cut result: %s", res)
+    elif cmd == "DRIVE_PAST_WIRE":
+        if args:
+            try:
+                dist = int(args[0])
+                await mower.command("SetDrivePastWire", distance=dist)
+                LOG.info("Set drive past wire to %d ✅", dist)
+            except ValueError:
+                LOG.error("Invalid distance for DRIVE_PAST_WIRE: %s", args[0])
+        else:
+            LOG.warning("DRIVE_PAST_WIRE requires a distance argument")
+    elif cmd == "REVERSING_DISTANCE":
+        if args:
+            try:
+                dist = int(args[0])
+                await mower.command("SetReversingDistance", distance=dist)
+                LOG.info("Set reversing distance to %d ✅", dist)
+            except ValueError:
+                LOG.error("Invalid distance for REVERSING_DISTANCE: %s", args[0])
+        else:
+            LOG.warning("REVERSING_DISTANCE requires a distance argument")
+    elif cmd == "GARAGE_ENABLED":
+        if args:
+            enabled = args[0].upper() in ("ON", "TRUE", "1")
+            await mower.command("SetGarageEnabled", enabled=enabled)
+            LOG.info("Set garage enabled to %s ✅", enabled)
+        else:
+            LOG.warning("GARAGE_ENABLED requires ON/OFF argument")
+    elif cmd == "RADAR_ENABLED":
+        if args:
+            enabled = args[0].upper() in ("ON", "TRUE", "1")
+            await mower.command("SetAntiCollisionRadarEnabled", enabled=enabled)
+            LOG.info("Set anti-collision radar enabled to %s ✅", enabled)
+        else:
+            LOG.warning("RADAR_ENABLED requires ON/OFF argument")
+    elif cmd == "ECO_MODE":
+        if args:
+            enabled = args[0].upper() in ("ON", "TRUE", "1")
+            await mower.command("SetChargingStationLoopSignalGeneration", enabled=enabled)
+            LOG.info("Set eco mode (loop signal generation) to %s ✅", enabled)
+        else:
+            LOG.warning("ECO_MODE requires ON/OFF argument")
+    elif cmd == "GENERATE_LOOP_SIGNAL":
+        await mower.command("GenerateLoopSignal")
+        LOG.info("Generated new loop signal ✅")
     else:
         LOG.warning("Unknown command received: %s", cmd)
 
@@ -421,7 +552,12 @@ async def main() -> None:
 
     async def dispatch_command(payload: str) -> None:
         global bridge_paused
-        cmd = payload.strip().upper()
+        
+        parts = payload.strip().split()
+        if not parts:
+            return
+        cmd = parts[0].upper()
+        args = parts[1:]
 
         if cmd == "BRIDGE_PAUSE":
             bridge_paused = True
@@ -437,7 +573,7 @@ async def main() -> None:
             return
 
         async def _do(mower: Mower, _rssi: Optional[int]) -> None:
-            await send_command(mower, cmd)
+            await send_command(mower, cmd, args)
 
         for attempt in (1, 2):
             try:
