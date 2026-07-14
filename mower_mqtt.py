@@ -41,7 +41,7 @@ if LOCAL_LIB not in sys.path:
     sys.path.insert(0, LOCAL_LIB)
 
 from automower_ble.mower import Mower
-from automower_ble.protocol import MowerState, MowerActivity, ModeOfOperation
+from automower_ble.protocol import MowerState, MowerActivity, ModeOfOperation, ResponseResult
 from automower_ble.error_codes import ErrorCodes
 
 # ----------------------------
@@ -698,16 +698,41 @@ async def send_command(mower: Mower, cmd: str, args: Optional[list] = None) -> N
             LOG.warning("RADAR_ENABLED requires ON/OFF argument")
     elif cmd == "ECO_MODE":
         if args:
-            enabled = args[0].upper() in ("ON", "TRUE", "1")
+            eco_on = args[0].upper() in ("ON", "TRUE", "1")
+            # Eco mode ON means loop signal generation is disabled (False)
+            enabled = not eco_on
             await mower.command("SetChargingStationLoopSignalGeneration", enabled=enabled)
-            LOG.info("Set eco mode (loop signal generation) to %s ✅", enabled)
+            LOG.info("Set eco mode (loop signal generation) to %s (enabled=%s) ✅", args[0], enabled)
         else:
             LOG.warning("ECO_MODE requires ON/OFF argument")
     elif cmd == "FROST_SENSOR":
         if args:
             enabled = args[0].upper() in ("ON", "TRUE", "1")
-            await mower.command("SetFrostSensorEnabled", enabled=enabled)
-            LOG.info("Set frost sensor enabled to %s ✅", enabled)
+            
+            # If standard GetFrostSensorEnabled is already cached as unsupported, try legacy first
+            if "GetFrostSensorEnabled" in UNSUPPORTED_COMMANDS:
+                LOG.info("GetFrostSensorEnabled is cached as unsupported. Trying legacy SetFrostSensorEnabledLegacy...")
+                res, _ = await mower.command_response("SetFrostSensorEnabledLegacy", enabled=enabled)
+                if res == ResponseResult.OK:
+                    LOG.info("Set legacy frost sensor enabled to %s ✅", enabled)
+                    return
+                LOG.warning("SetFrostSensorEnabledLegacy failed with %s, falling back to standard...", res)
+
+            # Try standard command
+            res, _ = await mower.command_response("SetFrostSensorEnabled", enabled=enabled)
+            if res == ResponseResult.OK:
+                LOG.info("Set frost sensor enabled to %s ✅", enabled)
+            else:
+                # If standard failed and we haven't tried legacy yet, try legacy
+                if "GetFrostSensorEnabled" not in UNSUPPORTED_COMMANDS:
+                    LOG.info("SetFrostSensorEnabled failed with %s, trying legacy SetFrostSensorEnabledLegacy...", res)
+                    res_legacy, _ = await mower.command_response("SetFrostSensorEnabledLegacy", enabled=enabled)
+                    if res_legacy == ResponseResult.OK:
+                        LOG.info("Set legacy frost sensor enabled to %s ✅", enabled)
+                        return
+                    raise RuntimeError(f"Failed to set frost sensor: standard returned {res}, legacy returned {res_legacy}")
+                else:
+                    raise RuntimeError(f"Failed to set frost sensor: standard returned {res}")
         else:
             LOG.warning("FROST_SENSOR requires ON/OFF argument")
     elif cmd == "SENSOR_CONTROL":
