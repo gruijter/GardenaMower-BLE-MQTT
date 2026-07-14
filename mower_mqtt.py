@@ -703,6 +703,39 @@ async def send_command(mower: Mower, cmd: str, args: Optional[list] = None) -> N
             LOG.info("Set eco mode (loop signal generation) to %s ✅", enabled)
         else:
             LOG.warning("ECO_MODE requires ON/OFF argument")
+    elif cmd == "FROST_SENSOR":
+        if args:
+            enabled = args[0].upper() in ("ON", "TRUE", "1")
+            await mower.command("SetFrostSensorEnabled", enabled=enabled)
+            LOG.info("Set frost sensor enabled to %s ✅", enabled)
+        else:
+            LOG.warning("FROST_SENSOR requires ON/OFF argument")
+    elif cmd == "SENSOR_CONTROL":
+        if args:
+            enabled = args[0].upper() in ("ON", "TRUE", "1")
+            await mower.command("SetSensorControlEnabled", enabled=enabled)
+            LOG.info("Set sensor control enabled to %s ✅", enabled)
+        else:
+            LOG.warning("SENSOR_CONTROL requires ON/OFF argument")
+    elif cmd == "SENSOR_CONTROL_SENSITIVITY":
+        if args:
+            val = args[0].upper()
+            sens_map = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
+            if val in sens_map:
+                sensitivity = sens_map[val]
+            else:
+                try:
+                    sensitivity = int(val)
+                    if sensitivity not in (1, 2, 3):
+                        LOG.warning("SENSOR_CONTROL_SENSITIVITY value out of range (must be LOW/MEDIUM/HIGH or 1/2/3): %s", val)
+                        return
+                except ValueError:
+                    LOG.error("Invalid sensitivity value for SENSOR_CONTROL_SENSITIVITY: %s", val)
+                    return
+            await mower.command("SetSensorControlSensitivity", sensitivity=sensitivity)
+            LOG.info("Set sensor control sensitivity to %d ✅", sensitivity)
+        else:
+            LOG.warning("SENSOR_CONTROL_SENSITIVITY requires LOW/MEDIUM/HIGH or 1/2/3 argument")
     elif cmd == "MOW_DURATION":
         if args:
             try:

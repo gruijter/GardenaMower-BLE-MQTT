@@ -134,6 +134,9 @@ Publish any of the following raw strings to `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_
 * **`GARAGE_ENABLED <ON/OFF>`**: Enable/disable garage collision avoidance mode (e.g. `GARAGE_ENABLED ON`).
 * **`RADAR_ENABLED <ON/OFF>`**: Enable/disable collision radar (e.g. `RADAR_ENABLED OFF`).
 * **`ECO_MODE <ON/OFF>`**: Toggles loop signal Eco Mode (disables loop generator when parked/charging to save power).
+* **`FROST_SENSOR <ON/OFF>`**: Enable/disable the frost sensor (e.g. `FROST_SENSOR ON`).
+* **`SENSOR_CONTROL <ON/OFF>`**: Enable/disable SensorControl (e.g. `SENSOR_CONTROL OFF`).
+* **`SENSOR_CONTROL_SENSITIVITY <LOW/MEDIUM/HIGH>`**: Sets the SensorControl sensitivity (e.g. `SENSOR_CONTROL_SENSITIVITY HIGH`).
 * **`MOW_DURATION <seconds>`**: Sets the manual mow override duration used by the `MOW` command (0–28800 seconds, e.g. `MOW_DURATION 3600`). Current value is always visible in the status JSON as `customMowDuration`.
 * **`GENERATE_LOOP_SIGNAL`**: Generates a new loop signal synchronization code.
 * **`SET_TIME`**: Syncs the mower's internal clock with the host container's local clock.
