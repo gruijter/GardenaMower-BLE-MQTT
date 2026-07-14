@@ -213,6 +213,7 @@ UNSUPPORTED_COMMANDS_WHITELIST = {
     "GetAntiCollisionRadar",
     "GetFrostSensorEnabled",
     "GetFrostSensorEnabledLegacy",
+    "GetEcoModeEnabled",
     "GetLoopSignals",
     "GetLoopSignalStrength",
     "GetTime"
@@ -585,10 +586,9 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
             status["radarEnabled"] = "ON" if radar.get("enabled") else "OFF"
             status["radarAvailable"] = "ON" if radar.get("available") else "OFF"
             
-        loop_gen = await safe_mower_command(mower, "GetChargingStationLoopSignalGeneration", optional=True)
-        if loop_gen is not None:
-            # Eco mode is active (ON) when loop signal generation is stopped (False / 0)
-            status["ecoMode"] = "OFF" if loop_gen else "ON"
+        eco_mode = await safe_mower_command(mower, "GetEcoModeEnabled", optional=True)
+        if eco_mode is not None:
+            status["ecoMode"] = "ON" if eco_mode else "OFF"
             
         drive_past_wire = await safe_mower_command(mower, "GetDrivePastWire", optional=True)
         if drive_past_wire is not None:
@@ -698,11 +698,9 @@ async def send_command(mower: Mower, cmd: str, args: Optional[list] = None) -> N
             LOG.warning("RADAR_ENABLED requires ON/OFF argument")
     elif cmd == "ECO_MODE":
         if args:
-            eco_on = args[0].upper() in ("ON", "TRUE", "1")
-            # Eco mode ON means loop signal generation is disabled (False)
-            enabled = not eco_on
-            await mower.command("SetChargingStationLoopSignalGeneration", enabled=enabled)
-            LOG.info("Set eco mode (loop signal generation) to %s (enabled=%s) ✅", args[0], enabled)
+            enabled = args[0].upper() in ("ON", "TRUE", "1")
+            await mower.command("SetEcoModeEnabled", enabled=enabled)
+            LOG.info("Set eco mode to %s ✅", args[0])
         else:
             LOG.warning("ECO_MODE requires ON/OFF argument")
     elif cmd == "FROST_SENSOR":
