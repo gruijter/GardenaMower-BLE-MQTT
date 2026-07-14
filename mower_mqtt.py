@@ -226,14 +226,38 @@ async def safe_mower_command(mower: Mower, cmd: str, optional: bool = False, **k
     retries = 1 if optional else 3
     for attempt in range(1, retries + 1):
         try:
-            result = await asyncio.wait_for(mower.command(cmd, **kwargs), timeout=10)
+            # We call command_response to get both the status code and the parsed result.
+            # We pass warn_on_error=False to suppress log spam for optional commands.
+            status, result = await asyncio.wait_for(
+                mower.command_response(cmd, warn_on_error=not optional, **kwargs),
+                timeout=10
+            )
             watchdog_reset()
-            # If an optional command successfully returns None (without timeout or exception),
-            # and is on our whitelist of hardware/model-dependent features, cache it as unsupported.
-            if result is None and optional and cmd in UNSUPPORTED_COMMANDS_WHITELIST:
-                LOG.debug("Optional command %s returned None, caching as unsupported.", cmd)
-                UNSUPPORTED_COMMANDS.add(cmd)
-            return result
+
+            if status == ResponseResult.OK:
+                # If an optional command successfully returns None (without timeout or exception),
+                # and is on our whitelist of hardware/model-dependent features, cache it as unsupported.
+                if result is None and optional and cmd in UNSUPPORTED_COMMANDS_WHITELIST:
+                    LOG.debug("Optional command %s returned None (OK), caching as unsupported.", cmd)
+                    UNSUPPORTED_COMMANDS.add(cmd)
+                return result
+            else:
+                # Command failed on the mower (status is not OK)
+                if optional:
+                    LOG.debug("Optional command %s returned error status %s", cmd, status.name)
+                    # If it's a clear indication that the command is unsupported/unrecognized by this hardware,
+                    # cache it permanently to avoid future BLE queries.
+                    if mower.is_connected() and status in (
+                        ResponseResult.UNKNOWN_ERROR,
+                        ResponseResult.NOT_AVAILABLE,
+                        ResponseResult.INVALID_GROUP,
+                        ResponseResult.INVALID_ID,
+                    ):
+                        LOG.info("Caching optional command %s as unsupported (returned %s)", cmd, status.name)
+                        UNSUPPORTED_COMMANDS.add(cmd)
+                    return None
+                else:
+                    LOG.error("Mower command %s failed with status %s (attempt %d/%d)", cmd, status.name, attempt, retries)
         except asyncio.TimeoutError:
             if optional:
                 LOG.debug("Optional mower command %s timed out", cmd)
@@ -242,12 +266,12 @@ async def safe_mower_command(mower: Mower, cmd: str, optional: bool = False, **k
         except Exception as e:
             if optional:
                 LOG.debug("Optional mower command %s failed: %s", cmd, e)
-                # ValueError/UnicodeDecodeError indicates a permanent parser/protocol mismatch
                 if isinstance(e, (ValueError, UnicodeDecodeError)) and cmd in UNSUPPORTED_COMMANDS_WHITELIST:
                     LOG.debug("Optional command %s failed permanently with %s, caching as unsupported.", cmd, type(e).__name__)
                     UNSUPPORTED_COMMANDS.add(cmd)
             else:
                 LOG.error("Mower command %s failed: %s (attempt %d/%d)", cmd, e, attempt, retries)
+
         if attempt < retries:
             await asyncio.sleep(2 * attempt)  # backoff
 
