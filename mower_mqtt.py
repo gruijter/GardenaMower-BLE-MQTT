@@ -214,8 +214,6 @@ UNSUPPORTED_COMMANDS_WHITELIST = {
     "GetFrostSensorEnabled",
     "GetFrostSensorEnabledLegacy",
     "GetEcoModeEnabled",
-    "GetLoopSignals",
-    "GetLoopSignalStrength",
     "GetTime"
 }
 
@@ -547,6 +545,8 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
             loop_signals = await safe_mower_command(mower, "GetLoopSignals", optional=True, signalType=1)
             if loop_signals is None:
                 loop_signals = await safe_mower_command(mower, "GetLoopSignals", optional=True, signalType=0)
+                if loop_signals is None:
+                    UNSUPPORTED_COMMANDS.add("GetLoopSignals")
                 
             if loop_signals is not None:
                 status["loopSignalA"] = loop_signals.get("a0Signal")
@@ -560,6 +560,8 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
             loop_strength = await safe_mower_command(mower, "GetLoopSignalStrength", optional=True, signalType=1)
             if loop_strength is None:
                 loop_strength = await safe_mower_command(mower, "GetLoopSignalStrength", optional=True, signalType=0)
+                if loop_strength is None:
+                    UNSUPPORTED_COMMANDS.add("GetLoopSignalStrength")
                 
             if loop_strength is not None:
                 status["loopSignalStrength"] = loop_strength
