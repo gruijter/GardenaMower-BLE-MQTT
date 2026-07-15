@@ -1,6 +1,6 @@
 # GardenaMower-BLE-MQTT — Native Installation Guide
 
-A complete, start-to-finish guide for getting your Gardena BLE mower talking to Homey via MQTT, running natively as a `systemd` service on a Raspberry Pi or other Linux host. No Docker required.
+A complete, start-to-finish guide for getting your Gardena BLE mower talking via MQTT, running natively as a `systemd` service on a Raspberry Pi or other Linux host. No Docker required.
 
 Tested down to a **Raspberry Pi Zero W (1st generation)**.
 
@@ -14,9 +14,8 @@ Tested down to a **Raspberry Pi Zero W (1st generation)**.
 - Placement **close to the mower/charging station** — BLE range is limited, and a stable connection matters more than raw distance.
 - Your Gardena mower already set up and working with the official Gardena Bluetooth app (so you know its **PIN**)
 - **Mower must be docked in its charging station** with power on and a valid loop signal (boundary wire active) during the initial BLE pairing process. The mower will refuse to pair if it is out on the lawn or if the loop signal is inactive.
-- An MQTT broker reachable from the Pi (e.g. running on Homey, Home Assistant, or standalone Mosquitto)
+- **An MQTT broker** reachable from the Pi (e.g. running standalone Mosquitto, Homey, or Home Assistant)
 - Basic comfort with SSH and the command line
-- Homey with the **MQTT Client** or **MQTT Hub** app installed
 
 ---
 
@@ -161,23 +160,15 @@ Status: Battery=XX%, Charging=..., State=..., Activity=...
 ```
 That confirms pairing succeeded and status is being published to MQTT.
 
+3. **Resume normal operation**: Once pairing is confirmed, physically press the **Start** (or **Play**) button on the mower's keypad and **close the cover/hatch**. This returns the mower to its normal scheduled/docked state.
+   > [!NOTE]
+   > If you skip this, the mower will remain in a `STOPPED` state (reported as a "Safety Stop" or "Requires manual action" in smart home platforms) because the hatch is open and no start command was confirmed after the PIN entry.
+
 Once this works, stop it with `Ctrl+C` and move on.
 
 ---
 
-## Part 6 — Connect it to Homey
-
-In Homey, using the **MQTT Client** or **MQTT Hub** app:
-- Subscribe to `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/status` — a JSON payload with battery, charging state, mower state/activity, next scheduled start, schedule, RSSI, orientation/sensors, and more
-- Subscribe to `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/availability` — bridge status: `online` or `offline`
-- Publish commands to `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/command` to control the mower
-- Publish `BRIDGE_PAUSE` to that same command topic before opening the official Gardena app for an extended session (e.g. a firmware update), and `BRIDGE_RESUME` afterwards — this guarantees no BLE conflict between the bridge and the app
-
-For the complete list of status fields and all available commands, see the [README.md](README.md).
-
----
-
-## Part 7 — Run as a systemd service
+## Part 6 — Run as a systemd service
 
 ```bash
 sudo nano /etc/systemd/system/mower-mqtt.service
