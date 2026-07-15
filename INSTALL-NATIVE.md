@@ -105,7 +105,7 @@ pip3 install --upgrade pip
 
 Install all Python dependencies (including the patched mower protocol library) in one command:
 ```bash
-pip3 install -r requirements.txt
+pip3 install --no-cache-dir -r requirements.txt
 ```
 
 On a Pi Zero W, dependency installation can take 20–40 minutes if any packages need to be compiled from source. Let it run.
@@ -225,7 +225,7 @@ A BLE mower accepts only **one** connection at a time. This bridge connects only
 cd ~/GardenaMower-BLE-MQTT
 git pull
 source .venv/bin/activate
-pip3 install -r requirements.txt
+pip3 install --no-cache-dir --upgrade -r requirements.txt
 sudo systemctl restart mower-mqtt.service
 ```
 No pairing repeat needed — bonding is preserved on the host.
