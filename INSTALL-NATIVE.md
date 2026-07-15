@@ -116,7 +116,9 @@ On a Pi Zero W, dependency installation can take 20–40 minutes if any packages
 
 All settings live in a config file that's loaded as environment variables by `systemd`. This keeps secrets (MQTT password, etc.) out of the script and out of git.
 
+Copy the example configuration file and edit it:
 ```bash
+cp mower.env.example mower.env
 nano mower.env
 ```
 
