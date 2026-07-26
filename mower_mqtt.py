@@ -198,8 +198,12 @@ async def connect_mower() -> Tuple[Optional[Mower], Optional[int]]:
         rssi = rssi_holder.get("rssi")
         LOG.info("BLE connection established ✅ (RSSI: %s dBm)", rssi)
         return mower, rssi
-    except Exception:
+    except Exception as e:
         LOG.exception("Failed to connect to mower")
+        err_str = str(e)
+        if isinstance(e, (EOFError, OSError)) or "EOFError" in err_str or "Bad file descriptor" in err_str:
+            LOG.critical("Critical D-Bus socket failure detected (%s). Exiting process to trigger systemd restart...", e)
+            sys.exit(1)
         return None, None
 
 
@@ -434,23 +438,30 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
         next_start_utc = int(next_start) - offset_seconds
         next_start_iso = dt.datetime.fromtimestamp(next_start_utc, tz=dt.timezone.utc).isoformat()
 
+        mower_state_name = MowerState(state).name
+        is_error_state = mower_state_name in ("ERROR", "FATAL_ERROR", "WAIT_FOR_SAFETY_PIN")
+
         if last_error is not None:
             last_error_name = ErrorCodes(last_error["code"]).name
             last_error_time_utc = int(last_error["time"]) - offset_seconds
             last_error_time = dt.datetime.fromtimestamp(last_error_time_utc, tz=dt.timezone.utc).isoformat()
         else:
-            last_error_name = "UNKNOWN"
+            last_error_name = "NO_ERROR"
             last_error_time = None
+
+        # LastError represents active error status. If the mower has recovered and is no longer in an error state, report NO_ERROR.
+        active_last_error = last_error_name if is_error_state else "NO_ERROR"
 
         activity_name = MowerActivity(activity).name
 
         status.update(
             Battery=str(battery),
             Charging="ON" if charging else "OFF",
-            State=MowerState(state).name,
+            State=mower_state_name,
             Activity=activity_name,
             NextStartSchedule=next_start_iso,
-            LastError=last_error_name,
+            LastError=active_last_error,
+            LastErrorHistory=last_error_name,
             LastErrorSchedule=last_error_time,
             CurrUpdateSchedule=now_utc.isoformat(),
             totalRunningTime=data.get("totalRunningTime", 0),
@@ -521,16 +532,16 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
             if roll is not None:
                 status["roll"] = roll
 
-        # Tilt and Collision sensor status mapping based on the active error code
+        # Tilt and Collision sensor status mapping based on active error code
         # In the Gardena app: "Tilsensor" (tilt / lift) and "Botssensor" (collision)
-        if last_error_name in ["MOWER_TILTED", "TILT_SENSOR_PROBLEM", "ALARM_MOWER_TILTED"]:
+        if is_error_state and last_error_name in ["MOWER_TILTED", "TILT_SENSOR_PROBLEM", "ALARM_MOWER_TILTED"]:
             status["tiltSensor"] = "Tilted"
-        elif last_error_name in ["MOWER_LIFTED", "LIFTED", "ALARM_MOWER_LIFTED", "LIFTED_IN_LINK_ARM", "LIFT_SENSOR_DEFECT"]:
+        elif is_error_state and last_error_name in ["MOWER_LIFTED", "LIFTED", "ALARM_MOWER_LIFTED", "LIFTED_IN_LINK_ARM", "LIFT_SENSOR_DEFECT"]:
             status["tiltSensor"] = "Lifted"
         else:
             status["tiltSensor"] = "Oké"
 
-        if last_error_name in ["COLLISION_SENSOR_ERROR", "COLLISION_SENSOR_PROBLEM_FRONT", "COLLISION_SENSOR_PROBLEM_REAR", "COLLISION_SENSOR_DEFECT"]:
+        if is_error_state and last_error_name in ["COLLISION_SENSOR_ERROR", "COLLISION_SENSOR_PROBLEM_FRONT", "COLLISION_SENSOR_PROBLEM_REAR", "COLLISION_SENSOR_DEFECT"]:
             status["collisionSensor"] = "Error"
         else:
             status["collisionSensor"] = "Oké"
@@ -942,7 +953,11 @@ async def main() -> None:
 
         try:
             return await with_mower_connection(_do)
-        except Exception:
+        except Exception as e:
+            err_str = str(e)
+            if isinstance(e, (EOFError, OSError)) or "EOFError" in err_str or "Bad file descriptor" in err_str:
+                LOG.critical("Critical D-Bus socket error during poll cycle (%s). Exiting process to trigger systemd restart...", e)
+                sys.exit(1)
             LOG.warning("Poll cycle skipped — mower unreachable (out of range, or app connected)")
             return {}
 
@@ -1051,6 +1066,15 @@ async def main() -> None:
                                     )
                                 except Exception:
                                     pass
+
+                            # If mower remains unreachable for 10 consecutive polls (~10 minutes),
+                            # exit process so systemd (Restart=always) restarts Python with a fresh D-Bus socket.
+                            if consecutive_poll_failures >= 10:
+                                LOG.error(
+                                    "Mower unreachable for %d consecutive polls. Exiting process to trigger systemd restart...",
+                                    consecutive_poll_failures,
+                                )
+                                sys.exit(1)
 
                         await asyncio.sleep(CFG.poll_interval)
                         watchdog_reset()
