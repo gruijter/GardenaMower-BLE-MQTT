@@ -446,11 +446,11 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
             last_error_time_utc = int(last_error["time"]) - offset_seconds
             last_error_time = dt.datetime.fromtimestamp(last_error_time_utc, tz=dt.timezone.utc).isoformat()
         else:
-            last_error_name = "NO_ERROR"
+            last_error_name = "UNKNOWN"
             last_error_time = None
 
-        # LastError represents active error status. If the mower has recovered and is no longer in an error state, report NO_ERROR.
-        active_last_error = last_error_name if is_error_state else "NO_ERROR"
+        # LastError represents active error status. If the mower is not in an error state, report UNKNOWN so Homey clears alarm_stuck.
+        active_last_error = last_error_name if is_error_state else "UNKNOWN"
 
         activity_name = MowerActivity(activity).name
 
