@@ -19,7 +19,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
-VERSION = "0.9.0"
+VERSION = "0.10.0"
 
 import asyncio
 import json
@@ -41,7 +41,7 @@ if LOCAL_LIB not in sys.path:
     sys.path.insert(0, LOCAL_LIB)
 
 from automower_ble.mower import Mower
-from automower_ble.protocol import MowerState, MowerActivity, ModeOfOperation, ResponseResult
+from automower_ble.protocol import MowerState, MowerActivity, ModeOfOperation, ResponseResult, TaskInformation
 from automower_ble.error_codes import ErrorCodes
 
 # ----------------------------
@@ -656,7 +656,52 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
     return status
 
 
-async def send_command(mower: Mower, cmd: str, args: Optional[list] = None) -> None:
+DAY_ABBREVIATIONS = {
+    "mon": "on_monday",
+    "tue": "on_tuesday",
+    "wed": "on_wednesday",
+    "thu": "on_thursday",
+    "fri": "on_friday",
+    "sat": "on_saturday",
+    "sun": "on_sunday",
+}
+
+
+def _parse_schedule_tasks(raw_json: str) -> list:
+    """Parse a JSON array of {"days": [...], "start": "HH:MM", "duration_minutes": N}
+    task definitions into a list of TaskInformation objects."""
+    task_defs = json.loads(raw_json)
+    if not isinstance(task_defs, list):
+        raise ValueError("SET_SCHEDULE JSON must be a list of task objects")
+
+    tasks = []
+    for task_def in task_defs:
+        hh, mm = task_def["start"].split(":")
+        start_minutes = int(hh) * 60 + int(mm)
+        duration_minutes = int(task_def["duration_minutes"])
+
+        days = dict.fromkeys(DAY_ABBREVIATIONS.values(), False)
+        for day in task_def.get("days", []):
+            key = DAY_ABBREVIATIONS.get(str(day).strip().lower()[:3])
+            if key is None:
+                raise ValueError(f"Unknown day '{day}'")
+            days[key] = True
+
+        tasks.append(TaskInformation(
+            start_minutes,
+            duration_minutes,
+            days["on_monday"],
+            days["on_tuesday"],
+            days["on_wednesday"],
+            days["on_thursday"],
+            days["on_friday"],
+            days["on_saturday"],
+            days["on_sunday"],
+        ))
+    return tasks
+
+
+async def send_command(mower: Mower, cmd: str, args: Optional[list] = None, raw_args: str = "") -> None:
     """Send control commands to the mower. Raises on failure so the caller can react."""
     global custom_mow_duration
     cmd = cmd.upper()
@@ -685,6 +730,23 @@ async def send_command(mower: Mower, cmd: str, args: Optional[list] = None) -> N
         await mower.command("ClearOverride")
         await mower.command("SetMode", mode=ModeOfOperation.AUTO)
         LOG.info("Mower resumed schedule 🗓")
+    elif cmd == "SET_SCHEDULE":
+        if not raw_args:
+            LOG.warning(
+                'SET_SCHEDULE requires a JSON array of tasks, e.g. '
+                'SET_SCHEDULE [{"days":["mon","wed","fri"],"start":"15:00","duration_minutes":90}]'
+            )
+            return
+        try:
+            tasks = _parse_schedule_tasks(raw_args)
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            LOG.error("Invalid SET_SCHEDULE payload: %s", e)
+            return
+        await mower.set_tasks(tasks)
+        LOG.info("Set weekly schedule with %d task(s) ✅", len(tasks))
+    elif cmd == "CLEAR_SCHEDULE":
+        await mower.clear_tasks()
+        LOG.info("Cleared weekly schedule 🗑")
     elif cmd == "PAUSE":
         await mower.command("Pause")
         LOG.info("Mower paused ⏸")
@@ -812,6 +874,61 @@ async def send_command(mower: Mower, cmd: str, args: Optional[list] = None) -> N
     elif cmd == "GENERATE_LOOP_SIGNAL":
         await mower.command("GenerateLoopSignal")
         LOG.info("Generated new loop signal ✅")
+    elif cmd == "RESET_BLADE_USAGE":
+        await mower.command("ResetCuttingBladeUsageTime")
+        LOG.info("Reset cutting blade usage time ✅")
+    elif cmd == "STARTING_POINT_ENABLED":
+        if len(args) >= 2:
+            try:
+                point_id = int(args[0])
+                enabled = args[1].upper() in ("ON", "TRUE", "1")
+                await mower.command("SetStartingPointEnabled", startingPointId=point_id, enabled=enabled)
+                LOG.info("Set starting point %d enabled to %s ✅", point_id, enabled)
+            except ValueError:
+                LOG.error("Invalid starting point id for STARTING_POINT_ENABLED: %s", args[0])
+        else:
+            LOG.warning("STARTING_POINT_ENABLED requires <id> <ON/OFF>")
+    elif cmd == "STARTING_POINT_WIRE":
+        if len(args) >= 2:
+            try:
+                point_id, wire = int(args[0]), int(args[1])
+                await mower.command("SetStartingPointWire", startingPointId=point_id, wire=wire)
+                LOG.info("Set starting point %d wire to %d ✅", point_id, wire)
+            except ValueError:
+                LOG.error("Invalid value for STARTING_POINT_WIRE: %s", args)
+        else:
+            LOG.warning("STARTING_POINT_WIRE requires <id> <wire>")
+    elif cmd == "STARTING_POINT_DISTANCE":
+        if len(args) >= 2:
+            try:
+                point_id, distance = int(args[0]), int(args[1])
+                await mower.command("SetStartingPointDistance", startingPointId=point_id, distance=distance)
+                LOG.info("Set starting point %d distance to %d ✅", point_id, distance)
+            except ValueError:
+                LOG.error("Invalid value for STARTING_POINT_DISTANCE: %s", args)
+        else:
+            LOG.warning("STARTING_POINT_DISTANCE requires <id> <distance>")
+    elif cmd == "STARTING_POINT_PROPORTION":
+        if len(args) >= 2:
+            try:
+                point_id, proportion = int(args[0]), int(args[1])
+                await mower.command("SetStartingPointProportion", startingPointId=point_id, proportion=proportion)
+                LOG.info("Set starting point %d proportion to %d%% ✅", point_id, proportion)
+            except ValueError:
+                LOG.error("Invalid value for STARTING_POINT_PROPORTION: %s", args)
+        else:
+            LOG.warning("STARTING_POINT_PROPORTION requires <id> <percent>")
+    elif cmd == "STARTING_POINT_CORRIDOR_CUT":
+        if len(args) >= 2:
+            try:
+                point_id = int(args[0])
+                corridor_cut = args[1].upper() in ("ON", "TRUE", "1")
+                await mower.command("SetStartingPointCorridorCut", startingPointId=point_id, corridorCut=corridor_cut)
+                LOG.info("Set starting point %d corridor cut to %s ✅", point_id, corridor_cut)
+            except ValueError:
+                LOG.error("Invalid starting point id for STARTING_POINT_CORRIDOR_CUT: %s", args[0])
+        else:
+            LOG.warning("STARTING_POINT_CORRIDOR_CUT requires <id> <ON/OFF>")
     elif cmd == "SET_TIME":
         if args:
             try:
@@ -964,11 +1081,13 @@ async def main() -> None:
     async def dispatch_command(payload: str) -> None:
         global bridge_paused
         
-        parts = payload.strip().split()
-        if not parts:
+        stripped = payload.strip()
+        if not stripped:
             return
-        cmd = parts[0].upper()
-        args = parts[1:]
+        cmd, _, raw_args = stripped.partition(" ")
+        cmd = cmd.upper()
+        raw_args = raw_args.strip()
+        args = raw_args.split() if raw_args else []
 
         if cmd == "BRIDGE_PAUSE":
             bridge_paused = True
@@ -984,7 +1103,7 @@ async def main() -> None:
             return
 
         async def _do(mower: Mower, _rssi: Optional[int]) -> None:
-            await send_command(mower, cmd, args)
+            await send_command(mower, cmd, args, raw_args)
 
         for attempt in (1, 2):
             try:

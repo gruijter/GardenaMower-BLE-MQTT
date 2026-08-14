@@ -127,6 +127,11 @@ Publish any of the following raw strings to `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_
 * **`RESUME`**: Resumes mower operation (issues physical start trigger).
 * **`SPOT_CUT`**: Initiates a spiral spot cutting pattern at the current location.
 * **`STOP_SPOT_CUT`**: Stops the active spot cutting program.
+* **`SET_SCHEDULE <json>`**: Replaces the entire weekly mowing schedule. Payload is a JSON array of task objects, each with `days` (list of `mon`/`tue`/`wed`/`thu`/`fri`/`sat`/`sun`), `start` (`"HH:MM"`), and `duration_minutes`. Up to 15 tasks are supported (mower firmware limit). Example:
+  ```
+  SET_SCHEDULE [{"days":["mon","wed","fri"],"start":"15:00","duration_minutes":90},{"days":["sat"],"start":"09:00","duration_minutes":180}]
+  ```
+* **`CLEAR_SCHEDULE`**: Removes all weekly schedule tasks from the mower.
 
 ### Configuration & Maintenance Commands
 * **`DRIVE_PAST_WIRE <distance>`**: Sets drive-past-wire distance (in cm, e.g. `DRIVE_PAST_WIRE 30`).
@@ -141,6 +146,12 @@ Publish any of the following raw strings to `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_
 * **`GENERATE_LOOP_SIGNAL`**: Generates a new loop signal synchronization code.
 * **`SET_TIME`**: Syncs the mower's internal clock with the host container's local clock.
 * **`SET_TIME <epoch>`**: Sets the mower's internal clock to a specific Unix epoch timestamp (e.g. `SET_TIME 1783933759`).
+* **`RESET_BLADE_USAGE`**: Resets the cutting blade usage time counter (e.g. after replacing the blade).
+* **`STARTING_POINT_ENABLED <id> <ON/OFF>`**: Enable/disable a manual starting point (e.g. `STARTING_POINT_ENABLED 1 ON`).
+* **`STARTING_POINT_WIRE <id> <wire>`**: Sets the boundary wire followed to reach a manual starting point (e.g. `STARTING_POINT_WIRE 1 0`).
+* **`STARTING_POINT_DISTANCE <id> <meters>`**: Sets a manual starting point's distance from the charging station (e.g. `STARTING_POINT_DISTANCE 1 20`).
+* **`STARTING_POINT_PROPORTION <id> <percent>`**: Sets a manual starting point's mowing share in percent; the total across all starting points cannot exceed 100 (e.g. `STARTING_POINT_PROPORTION 1 50`).
+* **`STARTING_POINT_CORRIDOR_CUT <id> <ON/OFF>`**: Enable/disable CorridorCut for a manual starting point (e.g. `STARTING_POINT_CORRIDOR_CUT 1 ON`).
 
 ### Bridge System Commands
 * **`BRIDGE_PAUSE`**: Pauses the bridge's background BLE polling loop, freeing the single Bluetooth slot so the official Gardena app can connect continuously.
