@@ -19,7 +19,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
-VERSION = "0.10.0"
+VERSION = "0.11.0"
 
 import asyncio
 import json
@@ -89,6 +89,7 @@ class Config:
     mqtt_password: str = os.getenv("MQTT_PASS", "")
     mqtt_base_topic: str = os.getenv("MOWER_BASE_TOPIC", "mower_ble")
     poll_interval: int = int(os.getenv("MOWER_POLL", 60))
+    schedule_poll_interval: int = int(os.getenv("MOWER_SCHEDULE_POLL", 900))
     mower_address: str = os.getenv("MOWER_ADDRESS", "00:00:00:00:00:00")
     mower_pin: int = int(os.getenv("MOWER_PIN", "1234"))
 
@@ -128,6 +129,13 @@ custom_mow_duration = 3600  # default
 # so the official Gardena app has exclusive, guaranteed access.
 # Toggle with payload "PAUSE" / "RESUME" on the normal command topic.
 bridge_paused = False
+
+# Cache of one-time/slow-changing mower info (model, serial, schedule, ...).
+# Populated on first successful poll, refreshed periodically (schedule only,
+# since it's the one field in here that can change post-startup) and
+# immediately after a schedule write. REFRESH_INFO forces a full re-fetch.
+static_info: Dict[str, Any] = {}
+last_schedule_refresh: float = 0.0
 
 
 def watchdog_reset():
@@ -367,6 +375,33 @@ async def get_static_info(mower: Mower) -> Dict[str, Any]:
         if supported_accessories is not None:
             info["SupportedAccessories"] = supported_accessories
 
+        info.update(await get_schedule_info(mower))
+    except Exception:
+        LOG.exception("Unexpected error collecting static mower info")
+    return info
+
+
+async def get_schedule_info(mower: Mower) -> Dict[str, Any]:
+    """Fetch the current weekly schedule tasks.
+
+    Unlike the rest of get_static_info(), the schedule can change after
+    startup — from a SET_SCHEDULE/CLEAR_SCHEDULE command, or from the
+    official Gardena app. Callers re-run this periodically and immediately
+    after a schedule write, merging the result into the cached static_info.
+
+    On success, always returns all keys (Schedule=None / _tasks=[] /
+    ScheduleTasks=[] when the mower has no tasks) so a merge correctly
+    clears stale cached data. On failure, returns {} so the caller keeps
+    the last known-good values instead of wiping them due to a transient
+    BLE error.
+
+    `ScheduleTasks` is published in the exact same shape SET_SCHEDULE
+    accepts — {"days": [...], "start": "HH:MM", "duration_minutes": N} —
+    so consumers (e.g. Homey) can round-trip a fetched schedule straight
+    back into a write without reshaping it.
+    """
+    info: Dict[str, Any] = {"Schedule": None, "_tasks": [], "ScheduleTasks": []}
+    try:
         num_tasks = await safe_mower_command(mower, "GetNumberOfTasks", optional=True)
         if num_tasks:
             day_keys = [
@@ -376,6 +411,7 @@ async def get_static_info(mower: Mower) -> Dict[str, Any]:
             day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
             schedule_parts = []
             raw_tasks = []
+            schedule_tasks = []
             for task_id in range(num_tasks):
                 task = await safe_mower_command(mower, "GetTask", optional=True, taskId=task_id)
                 if not task:
@@ -389,13 +425,31 @@ async def get_static_info(mower: Mower) -> Dict[str, Any]:
                 schedule_parts.append(
                     f"{','.join(active_days) or 'none'} {start_h:02d}:{start_m:02d} ({dur_h}h{dur_m:02d}m)"
                 )
+                schedule_tasks.append({
+                    "days": [d.lower() for d in active_days],
+                    "start": f"{start_h:02d}:{start_m:02d}",
+                    "duration_minutes": (task["duration"] + 59) // 60,
+                })
             if schedule_parts:
                 info["Schedule"] = " | ".join(schedule_parts)
-            if raw_tasks:
-                info["_tasks"] = raw_tasks  # internal only, filtered before MQTT publish
+            info["_tasks"] = raw_tasks  # internal only, filtered before MQTT publish
+            info["ScheduleTasks"] = schedule_tasks
     except Exception:
-        LOG.exception("Unexpected error collecting static mower info")
+        LOG.exception("Unexpected error collecting schedule info")
+        return {}
     return info
+
+
+async def refresh_schedule_cache(mower: Mower) -> None:
+    """Re-fetch the schedule and merge it into the cached static_info,
+    so the next status publish reflects it. Called periodically (see
+    Config.schedule_poll_interval) and immediately after SET_SCHEDULE /
+    CLEAR_SCHEDULE so a write is visible on the very next poll."""
+    global last_schedule_refresh
+    schedule_data = await get_schedule_info(mower)
+    if schedule_data:
+        static_info.update(schedule_data)
+    last_schedule_refresh = asyncio.get_event_loop().time()
 
 
 async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -703,7 +757,7 @@ def _parse_schedule_tasks(raw_json: str) -> list:
 
 async def send_command(mower: Mower, cmd: str, args: Optional[list] = None, raw_args: str = "") -> None:
     """Send control commands to the mower. Raises on failure so the caller can react."""
-    global custom_mow_duration
+    global custom_mow_duration, static_info, last_schedule_refresh
     cmd = cmd.upper()
     if cmd == "MOW":
         logged_in = await safe_mower_command(mower, "IsOperatorLoggedIn")
@@ -744,9 +798,11 @@ async def send_command(mower: Mower, cmd: str, args: Optional[list] = None, raw_
             return
         await mower.set_tasks(tasks)
         LOG.info("Set weekly schedule with %d task(s) ✅", len(tasks))
+        await refresh_schedule_cache(mower)
     elif cmd == "CLEAR_SCHEDULE":
         await mower.clear_tasks()
         LOG.info("Cleared weekly schedule 🗑")
+        await refresh_schedule_cache(mower)
     elif cmd == "PAUSE":
         await mower.command("Pause")
         LOG.info("Mower paused ⏸")
@@ -877,6 +933,10 @@ async def send_command(mower: Mower, cmd: str, args: Optional[list] = None, raw_
     elif cmd == "RESET_BLADE_USAGE":
         await mower.command("ResetCuttingBladeUsageTime")
         LOG.info("Reset cutting blade usage time ✅")
+    elif cmd == "REFRESH_INFO":
+        static_info = await get_static_info(mower)
+        last_schedule_refresh = asyncio.get_event_loop().time()
+        LOG.info("Refreshed cached mower info (model, serial, versions, schedule, ...) ✅")
     elif cmd == "STARTING_POINT_ENABLED":
         if len(args) >= 2:
             try:
@@ -1012,7 +1072,7 @@ async def discover_mower_mac() -> Optional[str]:
 # Main Loop
 # ----------------------------
 async def main() -> None:
-    global custom_mow_duration, bridge_paused
+    global custom_mow_duration, bridge_paused, static_info, last_schedule_refresh
 
     # Resolve MAC address if not configured or using placeholder
     is_placeholder = (
@@ -1038,7 +1098,6 @@ async def main() -> None:
     if shutdown_event.is_set():
         return
 
-    static_info: Dict[str, Any] = {}
     mower_lock = asyncio.Lock()
 
     async def with_mower_connection(action: Callable[[Mower, Optional[int]], Awaitable[Any]]) -> Any:
@@ -1057,12 +1116,15 @@ async def main() -> None:
                     await mower.disconnect()
 
     async def run_poll_cycle() -> Dict[str, Any]:
-        nonlocal static_info
-
         async def _do(mower: Mower, rssi: Optional[int]) -> Dict[str, Any]:
-            nonlocal static_info
+            global static_info, last_schedule_refresh
             if not static_info:
                 static_info = await get_static_info(mower)
+                last_schedule_refresh = asyncio.get_event_loop().time()
+            elif asyncio.get_event_loop().time() - last_schedule_refresh >= CFG.schedule_poll_interval:
+                # Schedule can change from the official app too, so re-check it
+                # periodically even without a Homey-initiated write.
+                await refresh_schedule_cache(mower)
             info = dict(static_info)
             if rssi is not None:
                 info["RSSI"] = rssi

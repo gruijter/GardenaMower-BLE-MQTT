@@ -58,6 +58,7 @@ Below is the complete list of keys that can be published in the JSON status payl
   "SerialNumber": "123456789",
   "MowerName": "SILENO model 250",
   "Schedule": "Tue,Fri 15:00 (1h30m)",
+  "ScheduleTasks": [{"days": ["tue", "fri"], "start": "15:00", "duration_minutes": 90}],
   "RSSI": -74,
   "RemainingMowTime": 0,
   "totalRunningTime": 12345,
@@ -133,6 +134,8 @@ Publish any of the following raw strings to `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_
   ```
 * **`CLEAR_SCHEDULE`**: Removes all weekly schedule tasks from the mower.
 
+`ScheduleTasks` is published in the exact same shape `SET_SCHEDULE` accepts, so a fetched schedule can be round-tripped straight back into a write. The published `Schedule` / `ScheduleTasks` data refreshes automatically: immediately after `SET_SCHEDULE`/`CLEAR_SCHEDULE`, and every `MOWER_SCHEDULE_POLL` seconds otherwise (default 900 — the mower's schedule can also be changed from the official Gardena app, so it's re-checked periodically even without a bridge-initiated write). Use `REFRESH_INFO` (below) to force an immediate re-check.
+
 ### Configuration & Maintenance Commands
 * **`DRIVE_PAST_WIRE <distance>`**: Sets drive-past-wire distance (in cm, e.g. `DRIVE_PAST_WIRE 30`).
 * **`REVERSING_DISTANCE <distance>`**: Sets reverse-out distance (in mm, e.g. `REVERSING_DISTANCE 600`).
@@ -152,6 +155,7 @@ Publish any of the following raw strings to `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_
 * **`STARTING_POINT_DISTANCE <id> <meters>`**: Sets a manual starting point's distance from the charging station (e.g. `STARTING_POINT_DISTANCE 1 20`).
 * **`STARTING_POINT_PROPORTION <id> <percent>`**: Sets a manual starting point's mowing share in percent; the total across all starting points cannot exceed 100 (e.g. `STARTING_POINT_PROPORTION 1 50`).
 * **`STARTING_POINT_CORRIDOR_CUT <id> <ON/OFF>`**: Enable/disable CorridorCut for a manual starting point (e.g. `STARTING_POINT_CORRIDOR_CUT 1 ON`).
+* **`REFRESH_INFO`**: Forces an immediate re-fetch of all cached static mower info (model, serial number, software versions, hardware revision, weekly schedule, ...) instead of waiting for the next periodic/write-triggered refresh. Useful after a firmware update or a schedule change made from the official app.
 
 ### Bridge System Commands
 * **`BRIDGE_PAUSE`**: Pauses the bridge's background BLE polling loop, freeing the single Bluetooth slot so the official Gardena app can connect continuously.
