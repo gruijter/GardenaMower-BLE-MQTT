@@ -1,5 +1,8 @@
 bleak
 aiomqtt
+# Used directly (not just via bleak's bluezdbus backend) for the bluetooth
+# stack auto-recovery escalation in mower_mqtt.py.
+dbus-fast
 
 # Patched fork with fixes for GetMessage / GetOverride / GetTask parsing
 # bugs, pending upstream review (alistair23/AutoMower-BLE PRs #151, #152,

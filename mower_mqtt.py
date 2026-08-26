@@ -19,12 +19,14 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
-VERSION = "0.11.0"
+VERSION = "1.5.0"
 
 import asyncio
+import gzip
 import json
 import logging
 import os
+import shutil
 import sys
 import datetime as dt
 import signal
@@ -58,8 +60,24 @@ if _log_file:
         if _log_dir:
             os.makedirs(_log_dir, exist_ok=True)
         from logging.handlers import RotatingFileHandler
-        # Limit log file to 1MB and keep at most 3 backups to prevent infinite disk usage
-        _handlers.append(RotatingFileHandler(_log_file, maxBytes=1024 * 1024, backupCount=3, encoding="utf-8"))
+
+        # gzip each rotated backup — DEBUG logs are highly repetitive text
+        # (hex frames, D-Bus boilerplate) and compress ~15-18x, so many more
+        # backups fit in the same disk budget. `namer` must add the .gz
+        # suffix (not the rotator) since RotatingFileHandler also uses it,
+        # via plain os.rename, to shift older backups .1.gz -> .2.gz etc.
+        def _gzip_rotator(source, dest):
+            with open(source, "rb") as f_in, gzip.open(dest, "wb") as f_out:
+                shutil.copyfileobj(f_in, f_out)
+            os.remove(source)
+
+        # 1MB per (uncompressed) segment, 10 gzipped backups — combined with
+        # the bleak noise suppression below, comfortably covers several days
+        # of DEBUG logging in less disk space than the old 4MB/3-backup setup.
+        _file_handler = RotatingFileHandler(_log_file, maxBytes=1024 * 1024, backupCount=10, encoding="utf-8")
+        _file_handler.rotator = _gzip_rotator
+        _file_handler.namer = lambda name: name + ".gz"
+        _handlers.append(_file_handler)
     except Exception as _e:
         sys.stderr.write(f"Failed to initialize file logger for {_log_file}: {_e}\n")
 
@@ -78,6 +96,25 @@ else:
     logging.getLogger("automower_ble.mower").setLevel(logging.ERROR)
     logging.getLogger("automower_ble.protocol").setLevel(logging.WARNING)
 
+# bleak's own bluezdbus backend logs every raw D-Bus notification signal and
+# GATT characteristic write at DEBUG — almost entirely duplicating what
+# automower_ble.protocol already logs a line above/below (same bytes,
+# different framing). Those two message patterns alone made up >90% of
+# bleak's DEBUG lines in a captured session, so they're dropped even in
+# DEBUG mode — but everything else from bleak stays, since it's the rare,
+# genuinely useful connection-lifecycle info (connect/pair/disconnect/etc.)
+# that a blanket level bump would otherwise throw away too.
+class _BleakNoiseFilter(logging.Filter):
+    _NOISY_PREFIXES = ("received D-Bus signal:", "Write Characteristic ")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not record.getMessage().startswith(self._NOISY_PREFIXES)
+
+
+_bleak_noise_filter = _BleakNoiseFilter()
+logging.getLogger("bleak.backends.bluezdbus.manager").addFilter(_bleak_noise_filter)
+logging.getLogger("bleak.backends.bluezdbus.client").addFilter(_bleak_noise_filter)
+
 # ----------------------------
 # Configuration
 # ----------------------------
@@ -92,6 +129,21 @@ class Config:
     schedule_poll_interval: int = int(os.getenv("MOWER_SCHEDULE_POLL", 900))
     mower_address: str = os.getenv("MOWER_ADDRESS", "00:00:00:00:00:00")
     mower_pin: int = int(os.getenv("MOWER_PIN", "1234"))
+    # After this many consecutive process restarts that never reach a
+    # successful poll, escalate to restarting the bluetooth stack itself
+    # (a plain process restart can't clear a wedged BlueZ/D-Bus adapter).
+    bt_restart_threshold: int = int(os.getenv("BLUETOOTH_RESTART_THRESHOLD", 3))
+    # Minimum seconds between two bluetooth.service restart attempts.
+    bt_restart_cooldown: int = int(os.getenv("BLUETOOTH_RESTART_COOLDOWN", 900))
+    # Rebooting the host is disabled by default — it's a much bigger
+    # blast radius than restarting bluetooth.service (takes down everything
+    # else on the machine too), so it must be opted into explicitly.
+    reboot_escalation_enabled: bool = os.getenv("REBOOT_ESCALATION_ENABLED", "false").strip().lower() == "true"
+    # After this many bluetooth.service restart escalations still fail to
+    # recover the connection, reboot the host as a last resort.
+    reboot_after_bt_escalations: int = int(os.getenv("REBOOT_AFTER_BT_ESCALATIONS", 2))
+    # Minimum seconds between two reboot attempts.
+    reboot_cooldown: int = int(os.getenv("REBOOT_COOLDOWN", 3600))
 
 CFG = Config()
 
@@ -165,6 +217,148 @@ async def heartbeat_task(availability_topic: str):
             os._exit(1)
 
 # ----------------------------
+# Bluetooth stack recovery escalation
+# ----------------------------
+# A plain process restart (systemd Restart=always) gives the app a fresh
+# D-Bus socket, but it can't clear a wedged BlueZ adapter/bluetoothd — that
+# needs bluetooth.service itself restarted, or (if even that doesn't help)
+# the whole host rebooted. We track failed-restart streaks in a small state
+# file (survives across process restarts, unlike an in-memory counter) and
+# escalate in two tiers, each gated by its own cooldown so we don't hammer
+# the adapter or reboot-loop the host:
+#   1. After CFG.bt_restart_threshold consecutive failed process restarts,
+#      restart bluetooth.service + bt-agent.service.
+#   2. After CFG.reboot_after_bt_escalations such restarts still don't fix
+#      it, reboot the host.
+#
+# Both actions go straight over the system D-Bus (via dbus_fast, already a
+# transitive dependency of bleak) instead of shelling out to `systemctl`/
+# `sudo` — this works identically for a privileged Docker container (which
+# shares the host's D-Bus system bus and connects as root, so systemd/
+# logind authorize it like any other root caller) and for the unprivileged
+# `pi` user on a native install (which needs the polkit rule documented in
+# INSTALL-NATIVE.md, since polkit — not sudoers — gates D-Bus callers).
+_RESTART_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".mower_restart_state")
+
+_SYSTEMD_BUS = "org.freedesktop.systemd1"
+_SYSTEMD_PATH = "/org/freedesktop/systemd1"
+_SYSTEMD_IFACE = "org.freedesktop.systemd1.Manager"
+_LOGIND_BUS = "org.freedesktop.login1"
+_LOGIND_PATH = "/org/freedesktop/login1"
+_LOGIND_IFACE = "org.freedesktop.login1.Manager"
+
+
+def _read_restart_state() -> Dict[str, float]:
+    try:
+        with open(_RESTART_STATE_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {"streak": 0, "last_escalation": 0.0, "bt_escalations": 0, "last_reboot": 0.0}
+
+
+def _write_restart_state(state: Dict[str, float]) -> None:
+    try:
+        with open(_RESTART_STATE_FILE, "w") as f:
+            json.dump(state, f)
+    except Exception:
+        LOG.debug("Could not persist restart-escalation state", exc_info=True)
+
+
+def mark_poll_success() -> None:
+    """Call after a successful mower poll: clears the failed-restart streak
+    and bluetooth-escalation count (cooldown timestamps are kept)."""
+    state = _read_restart_state()
+    if state.get("streak") or state.get("bt_escalations"):
+        state["streak"] = 0
+        state["bt_escalations"] = 0
+        _write_restart_state(state)
+
+
+async def _dbus_manager_call(bus_name: str, path: str, interface: str, member: str, signature: str, body: list) -> None:
+    from dbus_fast import Message, MessageType
+    from dbus_fast.aio import MessageBus
+    from dbus_fast.constants import BusType
+
+    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+    try:
+        reply = await bus.call(
+            Message(destination=bus_name, path=path, interface=interface, member=member, signature=signature, body=body)
+        )
+        if reply is not None and reply.message_type == MessageType.ERROR:
+            raise RuntimeError(f"{reply.error_name}: {reply.body}")
+    finally:
+        bus.disconnect()
+
+
+async def _restart_systemd_unit(unit: str) -> bool:
+    try:
+        await _dbus_manager_call(_SYSTEMD_BUS, _SYSTEMD_PATH, _SYSTEMD_IFACE, "RestartUnit", "ss", [unit, "replace"])
+        LOG.info("Restarted %s via systemd D-Bus API", unit)
+        return True
+    except Exception as e:
+        LOG.error(
+            "Could not restart %s via D-Bus (%s) — see INSTALL-NATIVE.md for the "
+            "required polkit rule (no-op without it).", unit, e,
+        )
+        return False
+
+
+async def _reboot_host() -> bool:
+    try:
+        await _dbus_manager_call(_LOGIND_BUS, _LOGIND_PATH, _LOGIND_IFACE, "Reboot", "b", [False])
+        LOG.critical("Reboot requested via logind D-Bus API")
+        return True
+    except Exception as e:
+        LOG.error(
+            "Could not reboot via D-Bus (%s) — see INSTALL-NATIVE.md for the "
+            "required polkit rule (no-op without it).", e,
+        )
+        return False
+
+
+async def escalate_and_exit(reason: str) -> None:
+    """Record a failed-restart streak and, once it crosses the threshold,
+    try to restart the host's bluetooth stack (or, if that keeps failing to
+    help, reboot the host) before exiting for systemd to restart this
+    process. Always exits — never returns."""
+    state = _read_restart_state()
+    streak = state.get("streak", 0) + 1
+    last_escalation = state.get("last_escalation", 0.0)
+    bt_escalations = state.get("bt_escalations", 0)
+    last_reboot = state.get("last_reboot", 0.0)
+    now = dt.datetime.now().timestamp()
+    LOG.error("%s (failed-restart streak: %d)", reason, streak)
+
+    if streak >= CFG.bt_restart_threshold and now - last_escalation >= CFG.bt_restart_cooldown:
+        bt_escalations += 1
+
+        if (
+            CFG.reboot_escalation_enabled
+            and bt_escalations >= CFG.reboot_after_bt_escalations
+            and now - last_reboot >= CFG.reboot_cooldown
+        ):
+            LOG.critical(
+                "Bluetooth stack restart didn't help after %d attempts — rebooting the host...",
+                bt_escalations,
+            )
+            await _reboot_host()
+            state = {"streak": 0, "last_escalation": now, "bt_escalations": 0, "last_reboot": now}
+        else:
+            LOG.critical(
+                "Still unreachable after %d process restarts — restarting the "
+                "bluetooth stack to clear a possibly wedged BlueZ/D-Bus adapter...",
+                streak,
+            )
+            await _restart_systemd_unit("bluetooth.service")
+            await _restart_systemd_unit("bt-agent.service")
+            state = {"streak": 0, "last_escalation": now, "bt_escalations": bt_escalations, "last_reboot": last_reboot}
+    else:
+        state = {"streak": streak, "last_escalation": last_escalation, "bt_escalations": bt_escalations, "last_reboot": last_reboot}
+
+    _write_restart_state(state)
+    sys.exit(1)
+
+# ----------------------------
 # Helper Functions
 # ----------------------------
 async def connect_mower() -> Tuple[Optional[Mower], Optional[int]]:
@@ -210,8 +404,7 @@ async def connect_mower() -> Tuple[Optional[Mower], Optional[int]]:
         LOG.exception("Failed to connect to mower")
         err_str = str(e)
         if isinstance(e, (EOFError, OSError)) or "EOFError" in err_str or "Bad file descriptor" in err_str:
-            LOG.critical("Critical D-Bus socket failure detected (%s). Exiting process to trigger systemd restart...", e)
-            sys.exit(1)
+            await escalate_and_exit(f"Critical D-Bus socket failure detected ({e}). Exiting process to trigger systemd restart...")
         return None, None
 
 
@@ -1074,6 +1267,8 @@ async def discover_mower_mac() -> Optional[str]:
 async def main() -> None:
     global custom_mow_duration, bridge_paused, static_info, last_schedule_refresh
 
+    LOG.info("GardenaMower-BLE-MQTT v%s starting...", VERSION)
+
     # Resolve MAC address if not configured or using placeholder
     is_placeholder = (
         not CFG.mower_address
@@ -1135,8 +1330,7 @@ async def main() -> None:
         except Exception as e:
             err_str = str(e)
             if isinstance(e, (EOFError, OSError)) or "EOFError" in err_str or "Bad file descriptor" in err_str:
-                LOG.critical("Critical D-Bus socket error during poll cycle (%s). Exiting process to trigger systemd restart...", e)
-                sys.exit(1)
+                await escalate_and_exit(f"Critical D-Bus socket error during poll cycle ({e}). Exiting process to trigger systemd restart...")
             LOG.warning("Poll cycle skipped — mower unreachable (out of range, or app connected)")
             return {}
 
@@ -1226,6 +1420,7 @@ async def main() -> None:
                         status = await run_poll_cycle()
                         if status:
                             consecutive_poll_failures = 0
+                            mark_poll_success()
                             try:
                                 # retain=True: broker caches last value so Homey gets
                                 # it immediately on subscribe without waiting for next poll
@@ -1251,11 +1446,10 @@ async def main() -> None:
                             # If mower remains unreachable for 10 consecutive polls (~10 minutes),
                             # exit process so systemd (Restart=always) restarts Python with a fresh D-Bus socket.
                             if consecutive_poll_failures >= 10:
-                                LOG.error(
-                                    "Mower unreachable for %d consecutive polls. Exiting process to trigger systemd restart...",
-                                    consecutive_poll_failures,
+                                await escalate_and_exit(
+                                    f"Mower unreachable for {consecutive_poll_failures} consecutive polls. "
+                                    "Exiting process to trigger systemd restart..."
                                 )
-                                sys.exit(1)
 
                         await asyncio.sleep(CFG.poll_interval)
                         watchdog_reset()

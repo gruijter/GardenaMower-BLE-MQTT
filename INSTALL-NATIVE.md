@@ -206,6 +206,53 @@ From now on, this bonding is remembered by the host — you will **not** need to
 
 ---
 
+## Bluetooth stack auto-recovery (optional, recommended)
+
+`Restart=always` above already makes the bridge restart itself after a crash or a lost connection. But some failures aren't in the Python process at all — the BlueZ adapter/`bluetoothd` itself can get wedged (e.g. after a bad disconnect), and a Python restart alone can't fix that; only restarting `bluetooth.service` clears it.
+
+To let the bridge do that automatically instead of you needing to intervene by hand: if it restarts `BLUETOOTH_RESTART_THRESHOLD` times in a row (default 3) without ever completing a successful poll, it restarts `bluetooth.service` and `bt-agent.service` itself over the system D-Bus (via `systemd`'s `RestartUnit`, no `sudo`/`systemctl` subprocess involved), at most once per `BLUETOOTH_RESTART_COOLDOWN` seconds (default 900). See the commented `BLUETOOTH_RESTART_*` settings in `mower.env.example` to tune this.
+
+Because the bridge runs as the unprivileged `pi` user (not root), this needs a polkit rule granting it permission — without D-Bus's normal authentication prompt, which can't be answered on a headless system. Create one:
+```bash
+sudo nano /etc/polkit-1/rules.d/49-mower-mqtt.rules
+```
+with this content:
+```js
+polkit.addRule(function(action, subject) {
+    if (subject.user === "pi" &&
+        action.id === "org.freedesktop.systemd1.manage-units" &&
+        (action.lookup("unit") === "bluetooth.service" || action.lookup("unit") === "bt-agent.service")) {
+        return polkit.Result.YES;
+    }
+});
+```
+No restart needed — polkit picks up new rule files automatically. If you used a different `User=` in the systemd unit, change `"pi"` to match.
+
+Without this rule, the escalation attempt simply fails with a clear log line ("Could not restart bluetooth.service via D-Bus...") and the bridge falls back to its normal restart-only behavior, so it's safe to skip.
+
+Running in Docker instead? No setup needed — the container already runs privileged, on the host network, with the host's D-Bus system socket mounted, so it connects to `systemd` as root and is authorized automatically.
+
+### Last-resort host reboot (optional, off by default)
+
+If even restarting `bluetooth.service` doesn't help, the only thing left is rebooting the whole host. This is a much bigger blast radius — it takes down everything else running on the machine for a minute or two, not just the bridge — so it's **disabled by default** and has to be opted into explicitly:
+
+```
+REBOOT_ESCALATION_ENABLED=true
+```
+in `mower.env`. Once enabled, if `bluetooth.service` gets restarted `REBOOT_AFTER_BT_ESCALATIONS` times (default 2) without the connection recovering, the bridge reboots the host over D-Bus (`logind`'s `Reboot`), at most once per `REBOOT_COOLDOWN` seconds (default 3600). See the commented `REBOOT_*` settings in `mower.env.example`.
+
+This needs its own polkit action — add it to the same rule file as a second block:
+```js
+polkit.addRule(function(action, subject) {
+    if (subject.user === "pi" && action.id === "org.freedesktop.login1.reboot") {
+        return polkit.Result.YES;
+    }
+});
+```
+(In Docker this is authorized automatically for the same reason as above — no polkit rule needed — but the app-level opt-in via `REBOOT_ESCALATION_ENABLED` still applies.)
+
+---
+
 ## Coexisting with the official Gardena app
 
 A BLE mower accepts only **one** connection at a time. This bridge connects only briefly during each poll cycle (roughly every `MOWER_POLL` seconds) and for the moment it takes to send a command, then disconnects — it never holds the connection open. The official app should be able to connect the rest of the time without a fight. For guaranteed conflict-free access (e.g. a firmware update), use `BRIDGE_PAUSE` / `BRIDGE_RESUME` as described above.
