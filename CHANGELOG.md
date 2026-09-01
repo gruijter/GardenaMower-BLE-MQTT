@@ -2,6 +2,20 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Starts at 1.5.0 — earlier history is in `git log`.
 
+## [1.6.0] - 2026-09-01
+
+### Added
+- `OverrideAction`, `OverrideStartSchedule`, `OverrideDuration` in published status.
+- `MowPending` / `MowStartsAt`: a forced mow accepted while the mower still charges in the dock.
+- `remainingChargingTime` (optional, mower-dependent).
+
+### Changed
+- `GetOverride` is polled every cycle, not only while mowing.
+
+### Fixed
+- `NextStartSchedule` publishes `null` instead of `1970-01-01` when the mower reports no next start.
+- Remaining mow time used the wrong clock domain when `GetTime` is unsupported.
+
 ## [1.5.0] - 2026-08-25
 
 ### Added

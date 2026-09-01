@@ -19,7 +19,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 
 import asyncio
 import gzip
@@ -43,7 +43,7 @@ if LOCAL_LIB not in sys.path:
     sys.path.insert(0, LOCAL_LIB)
 
 from automower_ble.mower import Mower
-from automower_ble.protocol import MowerState, MowerActivity, ModeOfOperation, ResponseResult, TaskInformation
+from automower_ble.protocol import MowerState, MowerActivity, ModeOfOperation, OverrideAction, ResponseResult, TaskInformation
 from automower_ble.error_codes import ErrorCodes
 
 # ----------------------------
@@ -419,6 +419,7 @@ UNSUPPORTED_COMMANDS_WHITELIST = {
     "GetFrostSensorEnabled",
     "GetFrostSensorEnabledLegacy",
     "GetEcoModeEnabled",
+    "GetRemainingChargingTime",
     "GetTime"
 }
 
@@ -681,9 +682,16 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
             offset_seconds = int((local_now - utc_now).total_seconds())
             mower_local_dt = local_now
 
-        # Convert local epoch timestamps from mower back to real UTC datetime for external consumers
-        next_start_utc = int(next_start) - offset_seconds
-        next_start_iso = dt.datetime.fromtimestamp(next_start_utc, tz=dt.timezone.utc).isoformat()
+        # Mower-local "now", used to age the override window below
+        now_local_ts = now_utc_ts + offset_seconds
+
+        def local_epoch_to_iso(local_ts: int) -> str:
+            """Convert a mower-local epoch timestamp to a real UTC ISO string."""
+            return dt.datetime.fromtimestamp(int(local_ts) - offset_seconds, tz=dt.timezone.utc).isoformat()
+
+        # The mower reports 0 when no next start is scheduled (e.g. while an override runs).
+        # Publish null rather than 1970-01-01 so consumers can tell "unknown" from a real time.
+        next_start_iso = local_epoch_to_iso(next_start) if int(next_start) > 0 else None
 
         mower_state_name = MowerState(state).name
         is_error_state = mower_state_name in ("ERROR", "FATAL_ERROR", "WAIT_FOR_SAFETY_PIN")
@@ -701,12 +709,58 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
 
         activity_name = MowerActivity(activity).name
 
+        # Read the override unconditionally. A forced mow issued while the mower is still
+        # charging stays queued in the dock, so the override is the only place that shows
+        # the pending job during the wait -- exactly when Activity is not MOWING.
+        override = await safe_mower_command(mower, "GetOverride", optional=True)
+        override_action_name = "NONE"
+        override_start_iso = None
+        override_duration = 0
+        override_remaining = 0
+        if override:
+            try:
+                override_action = OverrideAction(int(override.get("action") or 0))
+            except ValueError:
+                LOG.debug("Unknown override action: %s", override.get("action"))
+                override_action = OverrideAction.NONE
+            override_action_name = override_action.name
+            override_start_ts = int(override.get("startTime") or 0)
+            override_duration = int(override.get("duration") or 0)
+            if override_start_ts > 0:
+                override_start_iso = local_epoch_to_iso(override_start_ts)
+                if override_duration > 0:
+                    override_remaining = max(0, override_start_ts + override_duration - now_local_ts)
+
+        # A forced mow that has not reached the lawn yet. The override window is already
+        # ticking, so an expired override is no longer pending.
+        mow_pending = (
+            override_action_name == "FORCEDMOW"
+            and override_remaining > 0
+            and activity_name not in ("MOWING", "GOING_OUT")
+        )
+
+        # Estimated moment the mower actually leaves the dock. Only meaningful while it is
+        # topping up the battery first; without a usable charging estimate this stays null
+        # and consumers fall back to the MowPending flag alone.
+        mow_starts_at_iso = None
+        if charging:
+            charge_remaining = await safe_mower_command(mower, "GetRemainingChargingTime", optional=True)
+            if isinstance(charge_remaining, int) and not isinstance(charge_remaining, bool) and 0 < charge_remaining <= 86400:
+                status["remainingChargingTime"] = charge_remaining
+                if mow_pending:
+                    mow_starts_at_iso = (now_utc + dt.timedelta(seconds=charge_remaining)).isoformat()
+
         status.update(
             Battery=str(battery),
             Charging="ON" if charging else "OFF",
             State=mower_state_name,
             Activity=activity_name,
             NextStartSchedule=next_start_iso,
+            OverrideAction=override_action_name,
+            OverrideStartSchedule=override_start_iso,
+            OverrideDuration=override_duration,
+            MowPending=mow_pending,
+            MowStartsAt=mow_starts_at_iso,
             LastError=active_last_error,
             LastErrorHistory=last_error_name,
             LastErrorSchedule=last_error_time,
@@ -727,16 +781,9 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
         # Calculate remaining mow time
         remaining_mow_seconds = 0
         if activity_name == "MOWING":
-            override = await safe_mower_command(mower, "GetOverride", optional=True)
-            if override and int(override.get("startTime") or 0) > 0 and int(override.get("duration") or 0) > 0:
-                # Manual override mow: compute from override startTime + duration
-                start_ts = int(override["startTime"])
-                duration_s = int(override["duration"])
-                if mower_local_time is not None:
-                    remaining_mow_seconds = max(0, (start_ts + duration_s) - mower_local_time)
-                else:
-                    now_ts_local = int(dt.datetime.now().timestamp())
-                    remaining_mow_seconds = max(0, (start_ts + duration_s) - now_ts_local)
+            if override_start_iso is not None and override_duration > 0:
+                # Manual override mow: computed above from override startTime + duration
+                remaining_mow_seconds = override_remaining
                 LOG.debug("Override mow remaining: %d seconds", remaining_mow_seconds)
             else:
                 # Scheduled mow: find the active task for today
@@ -890,13 +937,18 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
             # Exclude internal keys (prefixed with _) from the published status
             status.update({k: v for k, v in static_info.items() if not k.startswith("_")})
 
+        pending_note = ""
+        if mow_pending:
+            pending_note = ", MowPending (starts %s)" % (mow_starts_at_iso or "unknown")
+
         LOG.info(
-            "Status: Battery=%s%%, Charging=%s, State=%s, Activity=%s, RemainingMow=%ds",
+            "Status: Battery=%s%%, Charging=%s, State=%s, Activity=%s, RemainingMow=%ds%s",
             status["Battery"],
             status["Charging"],
             status["State"],
             status["Activity"],
             status["RemainingMowTime"],
+            pending_note,
         )
     except Exception:
         LOG.exception("Unexpected error collecting mower status")
