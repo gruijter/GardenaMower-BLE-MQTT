@@ -2,6 +2,11 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Starts at 1.5.0 — earlier history is in `git log`.
 
+## [1.6.1] - 2026-09-01
+
+### Changed
+- `Status:` log line includes battery voltage, current and temperature when the mower reports them.
+
 ## [1.6.0] - 2026-09-01
 
 ### Added
