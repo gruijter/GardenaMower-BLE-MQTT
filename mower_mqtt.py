@@ -941,9 +941,24 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
         if mow_pending:
             pending_note = ", MowPending (starts %s)" % (mow_starts_at_iso or "unknown")
 
+        # Pack readings alongside the gauge percentage: when a mower reports an
+        # implausible battery level, voltage/current/temperature are what tell a
+        # real pack problem apart from a bad percentage reading.
+        batt_detail = ", ".join(
+            "%s=%s" % (label, status[key])
+            for key, label in (
+                ("batteryVoltage", "Volt"),
+                ("batteryCurrent", "Curr"),
+                ("batteryTemperature", "Temp"),
+            )
+            if status.get(key) is not None
+        )
+        batt_note = " (%s)" % batt_detail if batt_detail else ""
+
         LOG.info(
-            "Status: Battery=%s%%, Charging=%s, State=%s, Activity=%s, RemainingMow=%ds%s",
+            "Status: Battery=%s%%%s, Charging=%s, State=%s, Activity=%s, RemainingMow=%ds%s",
             status["Battery"],
+            batt_note,
             status["Charging"],
             status["State"],
             status["Activity"],
