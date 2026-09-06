@@ -7,7 +7,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Starts at 1.5.
 ### Added
 - `REBOOT_COOLDOWN_MAX`, `REBOOT_MAX_ATTEMPTS`, `REBOOT_GIVE_UP_AFTER`: reboot escalation now backs off exponentially (1h, 2h, 4h, 8h, 16h, then 24h) and gives up after 10 reboots or 7 days.
 - `BLUETOOTH_RESTART_THRESHOLD=0` disables the escalation.
-- `RESTART_STATE_FILE` overrides where the escalation counters are stored. `docker-compose.yml` points it at a new `./state` volume.
+- `RESTART_STATE_FILE` overrides where the escalation counters are stored. The reference `docker-compose.yml` points it at an optional `./state` volume, so counters survive container recreation.
 - Startup warning when a low-RAM board is left on a large disk-backed swapfile. zram is excluded.
 - Bridge version is published to MQTT: `BridgeVersion` in the status payload, and a retained `<base>/<mac>/bridge` topic sent on connect (readable even when the mower has never been reachable).
 
@@ -22,9 +22,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Starts at 1.5.
 - `BLUETOOTH_RESTART_THRESHOLD=0` escalated on every failure instead of disabling escalation.
 - `bt_escalations` grew without bound across a long outage.
 - Swap raised to 1 GB in INSTALL-NATIVE.md Part 1 was never restored.
+- INSTALL-NATIVE.md Part 1 step 5 assumed `/etc/dphys-swapfile` exists. It now checks `swapon --show` first and covers zram, no swap, and a missing `dphys-swapfile` package.
 - Polkit rule missed `reboot-multiple-sessions`, so reboots failed whenever anyone was logged in. `polkitd` install now documented.
 - INSTALL-NATIVE.md Part 5 loaded `mower.env` through shell quoting, so it did not match `systemd`'s `EnvironmentFile=` and mangled any password containing a space, `$`, `#` or a backtick.
-- Docker: escalation counters lived in the container layer, so `docker compose up -d` reset the reboot back-off. They now persist in `./state`.
+- Docker: escalation counters lived in the container layer, so `docker compose up -d` reset the reboot back-off. They can now be persisted via `./state`.
 - Docker: restarting the non-existent host `bt-agent.service` logged a misleading polkit error. The container runs its own agent, so this is now skipped quietly.
 - A BLE connect timeout counted as a wedged Bluetooth stack. On Python >= 3.11 `asyncio.TimeoutError` is the builtin `TimeoutError`, which subclasses `OSError`, so the broad D-Bus check matched it. Reboot escalation now uses an explicit D-Bus-socket test; process restarts are unchanged.
 - A state file holding a wrong type raised out of `escalate_and_exit` and was swallowed by the callers, disabling auto-recovery silently. Values are now coerced per key.

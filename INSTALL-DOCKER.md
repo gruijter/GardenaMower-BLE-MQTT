@@ -47,7 +47,14 @@ bluetoothctl show
 ```
 If there's still no adapter, check that your device actually has Bluetooth hardware (some mini PCs and older Pi models don't) — a cheap USB Bluetooth dongle works fine as a fallback.
 
-### 1.3 Start from a clean slate (important if you've experimented with this mower before)
+### 1.3 Start from a clean slate
+
+**Fresh host that has never touched this mower? Skip to Part 2.**
+
+Only needed if this host was ever paired with this mower before, including failed attempts.
+
+<details>
+<summary>Cleaning up a previous attempt</summary>
 
 Bluetooth pairing/bonding information is stored **on the host itself**, independent of any container. If this mower was ever paired with this host before — even from a failed or abandoned attempt — leftover bonding data can interfere with a fresh pairing attempt. Check and clean up:
 
@@ -75,7 +82,8 @@ ps aux | grep -i bluetoothctl
 > [!NOTE]
 > When running the `ps aux | grep` commands above, if the only output line you see contains `grep --color=auto`, it means no background process is running. This is exactly what you want (a clean slate). If a process *were* running, you would see another line with the actual executable path `/usr/bin/bt-agent` or `bluetoothctl`.
 
-If you're setting this up on a host that's never touched this mower before, this whole section will simply come up empty — that's fine, just move on.
+If nothing above returns anything, you were already clean.
+</details>
 
 ---
 
@@ -99,13 +107,17 @@ Configure your MQTT broker connection details, mower PIN, and settings inside `m
 
 ### Finding your mower's details
 
-- **MAC address**: The bridge can **autodiscover** this if you leave `MOWER_ADDRESS` blank or set to `AA:BB:CC:DD:EE:FF`. It will persistently save the found address back to the `mower.env` file. 
+- **MAC address**: **nothing to do.** `mower.env.example` already ships `MOWER_ADDRESS=AA:BB:CC:DD:EE:FF`, which turns on autodiscovery. The bridge finds the mower on first run and writes the real address back into `mower.env` for you.
 
-  Alternatively, you can check the official Gardena Bluetooth app's device info screen, or scan for it manually:
+  <details>
+  <summary>Setting it manually instead</summary>
+
+  Check the official Gardena Bluetooth app's device info screen, or scan:
   ```bash
   bluetoothctl scan on
   ```
-  Look for your mower's name in the output, note its address, then `bluetoothctl scan off`.
+  Look for your mower's name, then `bluetoothctl scan off`. Put the address in `MOWER_ADDRESS`.
+  </details>
 - **PIN**: the same PIN you use in the official Gardena app (Settings → Bluetooth). Default is often `1234` if never changed. It must be physically entered on the mower's buttons during pairing (mapping details are documented inline in [mower.env.example](mower.env.example)).
 
 ---
@@ -156,7 +168,7 @@ That confirms pairing succeeded and status is being published to MQTT.
 ```bash
 # Ctrl+C to stop the foreground session
 docker compose up -d
-docker compose logs -f   # optional, to keep watching
+docker compose logs -f   # optional, to keep watching — Ctrl+C to exit
 ```
 
 From now on, this bonding is remembered by the host — you will **not** need to repeat the pairing steps on future restarts, reboots, or container updates.
@@ -169,9 +181,21 @@ A privileged container shares the host's D-Bus, so the same escalation as the na
 
 `REBOOT_ESCALATION_ENABLED=true` reboots the **host**, not the container. It is off by default and only fires on a wedged D-Bus socket, never on an unreachable mower. See `BLUETOOTH_RESTART_*` / `REBOOT_*` in `mower.env.example`, and the ladder details in [INSTALL-NATIVE.md](INSTALL-NATIVE.md#last-resort-host-reboot-optional-off-by-default).
 
-Two Docker specifics:
-- The counters live in `./state`, mounted by `docker-compose.yml`. They must outlive the container — without that volume the reboot back-off resets on every `docker compose up -d`. Delete `./state/.mower_restart_state` to reset them by hand (Docker creates `./state` root-owned, so this needs `sudo`).
+<details>
+<summary>Persisting the counters across container recreation (optional)</summary>
+
+By default the escalation counters live inside the container. They survive restarts and host reboots — Docker restarts the *same* container, so the reboot back-off is never lost in a loop. They are only lost when the container is **recreated** (`docker compose up -d`), which restarts the ladder from the beginning.
+
+To keep them across recreation, add these to your compose file — whatever it is named, and wherever this service lives:
+```yaml
+    volumes:
+      - ./state:/app/state
+    environment:
+      - RESTART_STATE_FILE=/app/state/.mower_restart_state
+```
+Then `./state/.mower_restart_state` is the file to delete to reset the counters by hand (Docker creates `./state` root-owned, so this needs `sudo`).
 - The pairing agent runs inside the container, so there is no `bt-agent.service` on the host. The bridge skips it. After a `bluetooth.service` restart the in-container agent is no longer registered; run `docker compose restart` if you need to re-pair.
+</details>
 
 ---
 
@@ -185,19 +209,20 @@ A BLE mower accepts only **one** connection at a time. This bridge connects only
 
 ```bash
 cd GardenaMower-BLE-MQTT
-git pull            # picks up docker-compose.yml changes, not just the image
 docker compose pull
 docker compose up -d
 ```
 No pairing repeat needed — bonding is preserved on the host.
 
-### Upgrading from 1.6.x
+`docker-compose.yml` in this repo is a reference example. If you renamed it, merged this service into your own stack, or switched to `build: .`, keep using your own file — nothing in an update requires replacing it.
 
-`git pull` now matters: `docker-compose.yml` gained the `./state` volume. If you edited that file locally — e.g. swapped `image:` for `build: .` — the pull will abort. `git stash`, pull, then re-apply your change.
+<details>
+<summary><b>Upgrading from 1.6.x?</b> (skip on a fresh install)</summary>
 
-Without the new volume the bridge still runs, but the escalation counters stay in the container layer and reset on every `docker compose up -d`.
+`docker compose pull && docker compose up -d` is all that is required — the new image is self-contained.
 
-The counters reset once during this upgrade, as they move out of the container layer.
+The reference `docker-compose.yml` gained an optional `./state` volume; see the auto-recovery section above if you want the escalation counters to survive container recreation. Nothing breaks without it.
+</details>
 
 ---
 
@@ -225,7 +250,7 @@ bluetoothctl remove <MOWER_MAC>
   - Make sure the mower is in pairing mode (switch the mower's power off and back on while docked to open the 3-minute pairing window).
   - Clear any old paired devices on the mower side (disconnect it in the official Gardena app and remove other devices if possible).
 - **Pairing fails, or the container seems to hang on `pairing device...`**: the mower's pairing window (~2–3 minutes) likely closed before you entered the PIN — power-cycle the mower to put it back in pairing mode and try again. Make sure you're entering the PIN on the mower's own buttons, not just relying on `MOWER_PIN` in the config.
-- **Pairing behaves oddly / mower connects instantly without asking for anything**: possible leftover bonding from a previous attempt — run `bluetoothctl remove <MOWER_MAC>` on the host (see [1.3](#13-start-from-a-clean-slate-important-if-youve-experimented-with-this-mower-before)) and try again.
+- **Pairing behaves oddly / mower connects instantly without asking for anything**: possible leftover bonding from a previous attempt — run `bluetoothctl remove <MOWER_MAC>` on the host (see [1.3](#13-start-from-a-clean-slate)) and try again.
 - **`MOW` command is accepted but the mower doesn't physically move**: check that the charging station / boundary wire isn't in a power-saving mode with its signal disabled — the mower will accept the BLE command but refuses to move without an active guide wire signal. Check this in the Gardena app.
 - **Can't connect with the official Gardena app while the bridge is running**: publish `BRIDGE_PAUSE` to the command topic first, `BRIDGE_RESUME` when you're done.
 - **Status stops updating after a while**: check `docker compose logs -f` for errors; the bridge automatically reconnects on BLE drops, but a fully unreachable mower (out of range, powered off) will simply show no new status until it's reachable again.

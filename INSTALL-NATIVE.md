@@ -45,7 +45,20 @@ Tested down to a **Raspberry Pi Zero W (1st generation)**.
    sudo systemctl enable --now bluetooth
    sudo rfkill unblock bluetooth
    ```
-5. **If you're on a low-RAM board (Pi Zero W/2 W):** temporarily increase swap, since some Python dependencies may need to be compiled from source and can otherwise run out of memory:
+5. **Low-RAM board (Pi Zero W/2 W)?** You need swap while dependencies compile. Check what you have:
+   ```bash
+   swapon --show
+   ```
+
+   | Output contains | What to do |
+   |---|---|
+   | `/dev/zram0` | **Nothing — go straight to Part 2.** zram is compressed RAM swap; it costs the SD card nothing. This is the default on current Raspberry Pi OS Lite. |
+   | `/var/swap` | Raise it — see below |
+   | nothing at all | `sudo apt install -y dphys-swapfile`, then raise it — see below |
+
+   <details>
+   <summary><b>Raising file-backed swap</b> (only for the last two rows)</summary>
+
    ```bash
    grep CONF_SWAPSIZE /etc/dphys-swapfile   # note this value, you restore it in Part 3
    sudo nano /etc/dphys-swapfile
@@ -53,9 +66,11 @@ Tested down to a **Raspberry Pi Zero W (1st generation)**.
    Set `CONF_SWAPSIZE=1024`, save, then:
    ```bash
    sudo systemctl restart dphys-swapfile
+   swapon --show   # confirm the new size
    ```
    > [!IMPORTANT]
-   > This is temporary. Part 3 restores it — a permanent 1 GB swapfile wears out the SD card.
+   > Temporary. Part 3 restores it — a permanent 1 GB swapfile wears out the SD card.
+   </details>
 
 ---
 
@@ -112,16 +127,34 @@ pip3 install --no-cache-dir --ignore-requires-python -r requirements.txt
 
 On a Pi Zero W, dependency installation can take 20–40 minutes if any packages need to be compiled from source. Let it run.
 
-**If you raised swap in Part 1 step 5, put it back now:**
+**When it finishes, Part 3 is done — continue to Part 4.** The two boxes below are only for the cases they name.
+
+<details>
+<summary>The install was <b>Killed</b>, or raised <b>MemoryError</b></summary>
+
+Most likely on a 512 MB board with only zram swap. Add disk swap just for the build, then remove it:
+```bash
+sudo fallocate -l 1G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+# re-run the pip command above, then:
+sudo swapoff /swapfile && sudo rm /swapfile
+```
+</details>
+
+<details>
+<summary>You raised <code>CONF_SWAPSIZE</code> in Part 1 step 5 — restore it now</summary>
+
+Does not apply if `swapon --show` showed `/dev/zram0`.
 ```bash
 sudo nano /etc/dphys-swapfile
 ```
-Restore `CONF_SWAPSIZE` to the value you noted, save, then:
+Restore `CONF_SWAPSIZE` to the value you noted (`100` if you installed `dphys-swapfile` yourself), save, then:
 ```bash
 sudo systemctl restart dphys-swapfile
 free -h   # Swap should be back to its original size
 ```
 The bridge warns at startup if this is left raised.
+</details>
 
 ---
 
@@ -139,11 +172,18 @@ Configure your MQTT broker connection details, mower PIN, and settings inside `m
 
 ### Finding your mower's details
 
-- **MAC address**: The bridge can **autodiscover** this if you leave `MOWER_ADDRESS` blank or set to `AA:BB:CC:DD:EE:FF`. Alternatively, you can check the official Gardena Bluetooth app's device info screen, or scan for it manually:
+- **MAC address**: **nothing to do.** `mower.env.example` already ships `MOWER_ADDRESS=AA:BB:CC:DD:EE:FF`, which turns on autodiscovery. The bridge finds the mower on first run and writes the real address back into `mower.env` for you.
+
+  <details>
+  <summary>Setting it manually instead</summary>
+
+  Check the official Gardena Bluetooth app's device info screen, or scan:
   ```bash
   bluetoothctl scan on
   ```
-  Look for your mower's name, then `bluetoothctl scan off`.
+  Look for your mower's name, then `bluetoothctl scan off`. Put the address in `MOWER_ADDRESS`.
+  </details>
+
 - **PIN**: the same PIN you use in the official Gardena app (Settings → Bluetooth). Default is often `1234` if never changed. It must be physically entered on the mower's buttons during pairing (mapping details are documented inline in [mower.env.example](mower.env.example)).
 
 ---
@@ -159,7 +199,11 @@ while IFS= read -r line || [ -n "$line" ]; do
 done < mower.env
 python3 mower_mqtt.py
 ```
-This reads `mower.env` the same way `systemd`'s `EnvironmentFile=` will in Part 6 — the value is everything after the first `=`, taken literally. Do not use `source mower.env` or `export $(... | xargs)`: both apply shell quoting, which mangles any password containing a space, `$`, `#` or a backtick.
+<details>
+<summary>Why the loop, and not <code>source mower.env</code></summary>
+
+It reads `mower.env` the same way `systemd`'s `EnvironmentFile=` will in Part 6 — the value is everything after the first `=`, taken literally. `source mower.env` and `export $(... | xargs)` both apply shell quoting, which mangles any password containing a space, `$`, `#` or a backtick.
+</details>
 
 ### Put the mower in pairing mode & enter PIN
 
@@ -213,13 +257,17 @@ KillMode=mixed
 WantedBy=multi-user.target
 ```
 
-`Wants=` rather than `Requires=` for `bt-agent.service`: the pairing agent is only needed while pairing, and with `Requires=` a `bt-agent` that fails to come back during auto-recovery would stop this service — which `Restart=always` does not undo.
+<details>
+<summary>Why <code>Wants=</code> and not <code>Requires=</code></summary>
+
+The pairing agent is only needed while pairing. With `Requires=`, a `bt-agent` that fails to come back during auto-recovery would stop this service — which `Restart=always` does not undo.
+</details>
 
 Enable and start it:
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now mower-mqtt.service
-journalctl -u mower-mqtt.service -f
+journalctl -u mower-mqtt.service -f   # follows the log — Ctrl+C to exit and continue
 ```
 
 From now on, this bonding is remembered by the host — you will **not** need to repeat the pairing steps on future restarts or reboots.
@@ -254,8 +302,6 @@ EOF
 ```
 If you used a different username than `pi` when creating `mower-mqtt.service` earlier, use that instead.
 
-`reboot-multiple-sessions` is required whenever anyone else is logged in — without it the reboot fails while you are on SSH and succeeds when you are not.
-
 Verify:
 ```bash
 sudo systemctl restart polkit
@@ -275,17 +321,23 @@ nano mower.env
 ```
 Change `# REBOOT_ESCALATION_ENABLED=false` to `REBOOT_ESCALATION_ENABLED=true`, then save (Ctrl+O, Enter) and exit (Ctrl+X).
 
-The ladder is bounded — it will not reboot-loop your Pi. Each reboot waits twice as long as the last (1h, 2h, 4h, 8h, 16h, then 24h), and it gives up entirely after `REBOOT_MAX_ATTEMPTS` (10) or `REBOOT_GIVE_UP_AFTER` (7 days), whichever comes first — roughly 10 reboots spread over 6.5 days, then it stops and logs `Giving up on reboot escalation`. A successful poll clears the ladder.
-
 > [!WARNING]
 > Reboots are the most write-intensive thing a Pi does. On an SD-card Pi Zero W, do not raise `REBOOT_MAX_ATTEMPTS` or lower `REBOOT_COOLDOWN`.
 
-State lives in `.mower_restart_state` in the project directory. Delete it to reset the counters by hand:
+<details>
+<summary>How the ladder is bounded, and how to reset it</summary>
+
+It will not reboot-loop your Pi. Each reboot waits twice as long as the last (1h, 2h, 4h, 8h, 16h, then 24h), and it gives up entirely after `REBOOT_MAX_ATTEMPTS` (10) or `REBOOT_GIVE_UP_AFTER` (7 days), whichever comes first — roughly 10 reboots over 6.5 days, then it stops and logs `Giving up on reboot escalation`. A successful poll clears the ladder.
+
+`reboot-multiple-sessions` in the polkit rule above is required whenever anyone else is logged in — without it the reboot fails while you are on SSH and succeeds when you are not.
+
+Counters live in `.mower_restart_state` in the project directory. Reset them by hand with:
 ```bash
 rm -f ~/GardenaMower-BLE-MQTT/.mower_restart_state
 ```
 
 Tuning: see `REBOOT_*` examples in `mower.env.example`.
+</details>
 
 ---
 
@@ -306,9 +358,10 @@ sudo systemctl restart mower-mqtt.service
 ```
 No pairing repeat needed — bonding is preserved on the host.
 
-### One-time steps when upgrading from 1.6.x
+<details>
+<summary><b>Upgrading from 1.6.x?</b> Three one-time steps (skip on a fresh install)</summary>
 
-`git pull` only updates the project directory. Three fixes live outside it and need applying by hand once:
+`git pull` only updates the project directory. These three fixes live outside it:
 
 1. **Swap.** If you raised it during install and never put it back, the SD card has been running on a 1 GB swapfile ever since:
    ```bash
@@ -326,6 +379,7 @@ No pairing repeat needed — bonding is preserved on the host.
    ```
 
 `mower.env` is untouched — the new `REBOOT_*` options all default safely. Existing counters in `.mower_restart_state` carry over.
+</details>
 
 ---
 
