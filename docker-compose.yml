@@ -15,6 +15,12 @@ services:
       - /run/dbus:/run/dbus
       - ./mower.env:/app/mower.env
       - ./logs:/app/logs
+      # Auto-recovery counters. Must outlive the container: without this the
+      # reboot back-off resets to zero on every `docker compose up -d`.
+      - ./state:/app/state
 
     env_file:
       - mower.env
+
+    environment:
+      - RESTART_STATE_FILE=/app/state/.mower_restart_state

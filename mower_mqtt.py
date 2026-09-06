@@ -19,7 +19,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
-VERSION = "1.6.1"
+VERSION = "1.7.0"
 
 import asyncio
 import gzip
@@ -132,7 +132,8 @@ class Config:
     # After this many consecutive process restarts that never reach a
     # successful poll, escalate to restarting the bluetooth stack itself
     # (a plain process restart can't clear a wedged BlueZ/D-Bus adapter).
-    bt_restart_threshold: int = int(os.getenv("BLUETOOTH_RESTART_THRESHOLD", 3))
+    # 0 disables the bluetooth-restart tier entirely.
+    bt_restart_threshold: int = max(0, int(os.getenv("BLUETOOTH_RESTART_THRESHOLD", 3)))
     # Minimum seconds between two bluetooth.service restart attempts.
     bt_restart_cooldown: int = int(os.getenv("BLUETOOTH_RESTART_COOLDOWN", 900))
     # Rebooting the host is disabled by default — it's a much bigger
@@ -141,9 +142,17 @@ class Config:
     reboot_escalation_enabled: bool = os.getenv("REBOOT_ESCALATION_ENABLED", "false").strip().lower() == "true"
     # After this many bluetooth.service restart escalations still fail to
     # recover the connection, reboot the host as a last resort.
-    reboot_after_bt_escalations: int = int(os.getenv("REBOOT_AFTER_BT_ESCALATIONS", 2))
-    # Minimum seconds between two reboot attempts.
+    reboot_after_bt_escalations: int = max(1, int(os.getenv("REBOOT_AFTER_BT_ESCALATIONS", 2)))
+    # Back-off before the first reboot of an episode; doubles after every
+    # reboot, up to reboot_cooldown_max.
     reboot_cooldown: int = int(os.getenv("REBOOT_COOLDOWN", 3600))
+    # Ceiling for the doubling back-off, so it can't grow past a day.
+    reboot_cooldown_max: int = int(os.getenv("REBOOT_COOLDOWN_MAX", 86400))
+    # Hard stops on the ladder: give up after this many reboots, or this many
+    # seconds since the episode's first reboot, whichever comes first. With
+    # the defaults both land at roughly a week.
+    reboot_max_attempts: int = int(os.getenv("REBOOT_MAX_ATTEMPTS", 10))
+    reboot_give_up_after: int = int(os.getenv("REBOOT_GIVE_UP_AFTER", 604800))
 
 CFG = Config()
 
@@ -179,7 +188,7 @@ custom_mow_duration = 3600  # default
 
 # When True, the bridge stays fully off BLE (no polling, no commands)
 # so the official Gardena app has exclusive, guaranteed access.
-# Toggle with payload "PAUSE" / "RESUME" on the normal command topic.
+# Toggle with payload "BRIDGE_PAUSE" / "BRIDGE_RESUME" on the normal command topic.
 bridge_paused = False
 
 # Cache of one-time/slow-changing mower info (model, serial, schedule, ...).
@@ -224,12 +233,25 @@ async def heartbeat_task(availability_topic: str):
 # needs bluetooth.service itself restarted, or (if even that doesn't help)
 # the whole host rebooted. We track failed-restart streaks in a small state
 # file (survives across process restarts, unlike an in-memory counter) and
-# escalate in two tiers, each gated by its own cooldown so we don't hammer
-# the adapter or reboot-loop the host:
+# escalate in two tiers:
 #   1. After CFG.bt_restart_threshold consecutive failed process restarts,
 #      restart bluetooth.service + bt-agent.service.
 #   2. After CFG.reboot_after_bt_escalations such restarts still don't fix
 #      it, reboot the host.
+#
+# Tier 2 only runs for a *hard fault* — a dead D-Bus socket, i.e. a genuinely
+# wedged stack. A mower that simply doesn't answer (out of range, powered off,
+# in for service, or the official app holding its single BLE slot) is normal
+# operation and must never reboot the host, however long it lasts.
+#
+# Tier 2 is also bounded in three directions, because a reboot that doesn't
+# fix the fault will not fix it on the hundredth try either: each attempt
+# waits twice as long as the last (CFG.reboot_cooldown doubling, capped at
+# CFG.reboot_cooldown_max), and the ladder gives up entirely after
+# CFG.reboot_max_attempts or CFG.reboot_give_up_after. A successful poll
+# clears the whole episode. Without those bounds a permanently unreachable
+# mower reboots the host every ~75 minutes forever, which is how you kill an
+# SD card.
 #
 # Both actions go straight over the system D-Bus (via dbus_fast, already a
 # transitive dependency of bleak) instead of shelling out to `systemctl`/
@@ -238,7 +260,14 @@ async def heartbeat_task(availability_topic: str):
 # logind authorize it like any other root caller) and for the unprivileged
 # `pi` user on a native install (which needs the polkit rule documented in
 # INSTALL-NATIVE.md, since polkit — not sudoers — gates D-Bus callers).
-_RESTART_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".mower_restart_state")
+# Defaults next to the script, which is persistent for a native install. In
+# Docker that path is the container's writable layer — it survives a restart
+# but NOT `docker compose up -d`, which recreates the container and would
+# silently reset the reboot back-off. docker-compose.yml therefore points
+# RESTART_STATE_FILE at a mounted volume.
+_RESTART_STATE_FILE = os.getenv("RESTART_STATE_FILE") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), ".mower_restart_state"
+)
 
 _SYSTEMD_BUS = "org.freedesktop.systemd1"
 _SYSTEMD_PATH = "/org/freedesktop/systemd1"
@@ -248,29 +277,101 @@ _LOGIND_PATH = "/org/freedesktop/login1"
 _LOGIND_IFACE = "org.freedesktop.login1.Manager"
 
 
-def _read_restart_state() -> Dict[str, float]:
+_DEFAULT_RESTART_STATE: Dict[str, Any] = {
+    "streak": 0,
+    "last_escalation": 0.0,
+    "bt_escalations": 0,
+    "last_reboot": 0.0,
+    "reboot_attempts": 0,
+    "first_reboot": 0.0,
+    "reboot_gave_up": False,
+}
+
+
+# Coerced on read, per key. A wrong type here used to raise out of
+# escalate_and_exit and be swallowed by the callers' generic handlers, which
+# disabled auto-recovery silently. Per-key rather than all-or-nothing so one
+# unreadable field can't reset the reboot back-off to zero.
+_RESTART_STATE_TYPES: Dict[str, Callable[[Any], Any]] = {
+    "streak": lambda v: max(0, int(v)),
+    "last_escalation": float,
+    "bt_escalations": lambda v: max(0, int(v)),
+    "last_reboot": float,
+    "reboot_attempts": lambda v: max(0, int(v)),
+    "first_reboot": float,
+    "reboot_gave_up": bool,
+}
+
+
+def _read_restart_state() -> Dict[str, Any]:
+    """Missing or unreadable keys fall back to the defaults, so a state file
+    written by an older version upgrades in place instead of resetting the
+    ladder."""
+    state = dict(_DEFAULT_RESTART_STATE)
     try:
         with open(_RESTART_STATE_FILE, "r") as f:
-            return json.load(f)
+            loaded = json.load(f)
     except Exception:
-        return {"streak": 0, "last_escalation": 0.0, "bt_escalations": 0, "last_reboot": 0.0}
+        LOG.debug("Could not read restart-escalation state, using defaults", exc_info=True)
+        return state
+    if not isinstance(loaded, dict):
+        LOG.warning("Restart-escalation state file is not an object, using defaults")
+        return state
+    for key, cast in _RESTART_STATE_TYPES.items():
+        if key not in loaded:
+            continue
+        try:
+            state[key] = cast(loaded[key])
+        except (TypeError, ValueError):
+            LOG.warning("Ignoring unreadable %r in restart-escalation state", key)
+    return state
 
 
-def _write_restart_state(state: Dict[str, float]) -> None:
+def _write_restart_state(state: Dict[str, Any]) -> None:
+    """Written atomically and fsync'd: the reboot back-off is only a back-off
+    if it survives the reboot. A half-written or truncated state file reads
+    back as the all-zero defaults, which would clear every cooldown on boot."""
+    tmp = _RESTART_STATE_FILE + ".tmp"
+    directory = os.path.dirname(_RESTART_STATE_FILE) or "."
     try:
-        with open(_RESTART_STATE_FILE, "w") as f:
+        os.makedirs(directory, exist_ok=True)
+        with open(tmp, "w") as f:
             json.dump(state, f)
-    except Exception:
-        LOG.debug("Could not persist restart-escalation state", exc_info=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, _RESTART_STATE_FILE)
+    except Exception as e:
+        # Counters that can't be persisted mean the escalation can never build
+        # a streak — auto-recovery is effectively off. A read-only SD card
+        # looks exactly like this, so don't bury it at debug level.
+        LOG.warning("Could not persist restart-escalation state to %s (%s) — "
+                    "auto-recovery escalation is disabled until this is fixed.",
+                    _RESTART_STATE_FILE, e)
+        with contextlib.suppress(Exception):
+            os.unlink(tmp)
+        return
+    # Best-effort: the rename is already durable on ext4/overlayfs, and some
+    # filesystems reject fsync on a directory fd outright.
+    with contextlib.suppress(Exception):
+        dir_fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
 
 
 def mark_poll_success() -> None:
-    """Call after a successful mower poll: clears the failed-restart streak
-    and bluetooth-escalation count (cooldown timestamps are kept)."""
+    """Call after a successful mower poll: the fault is over, so clear the
+    whole escalation episode — streak, bluetooth escalations and the reboot
+    ladder. The last_reboot/last_escalation timestamps are kept, so a
+    flapping adapter still has to wait out the back-off."""
     state = _read_restart_state()
-    if state.get("streak") or state.get("bt_escalations"):
+    if any((state["streak"], state["bt_escalations"], state["reboot_attempts"], state["reboot_gave_up"])):
         state["streak"] = 0
         state["bt_escalations"] = 0
+        state["reboot_attempts"] = 0
+        state["first_reboot"] = 0.0
+        state["reboot_gave_up"] = False
         _write_restart_state(state)
 
 
@@ -290,17 +391,92 @@ async def _dbus_manager_call(bus_name: str, path: str, interface: str, member: s
         bus.disconnect()
 
 
-async def _restart_systemd_unit(unit: str) -> bool:
+async def _restart_systemd_unit(unit: str, required: bool = True) -> bool:
     try:
         await _dbus_manager_call(_SYSTEMD_BUS, _SYSTEMD_PATH, _SYSTEMD_IFACE, "RestartUnit", "ss", [unit, "replace"])
         LOG.info("Restarted %s via systemd D-Bus API", unit)
         return True
     except Exception as e:
+        # On a Docker install the pairing agent runs inside the container, so
+        # the host has no bt-agent.service. That's expected, not a failure.
+        if not required and "NoSuchUnit" in str(e):
+            LOG.debug("%s not present on this host, skipping", unit)
+            return False
         LOG.error(
             "Could not restart %s via D-Bus (%s) — see INSTALL-NATIVE.md for the "
             "required polkit rule (no-op without it).", unit, e,
         )
         return False
+
+
+# Low-RAM boards are told to raise swap to 1 GB in INSTALL-NATIVE.md Part 1 so
+# dependencies can compile, and Part 3 tells them to put it back. Plenty of
+# installs never do, and a permanent 1 GB swapfile on an SD card wears it out.
+# Split from the logging so it can be tested against fixture text.
+_SWAP_WARN_MIN_MB = 512      # RPi OS ships 100-200 MB; the install guide sets 1024
+_SWAP_WARN_MAX_RAM_MB = 1536  # only Pi Zero / Zero 2 / Pi 3 class boards
+
+
+def _swap_warning(meminfo: str, swaps: str) -> Optional[str]:
+    """Return a warning if this looks like a low-RAM board left on a big
+    disk-backed swapfile, else None. zram is excluded — compressed RAM swap
+    costs the card nothing."""
+    mem_mb = 0
+    for line in meminfo.splitlines():
+        if line.startswith("MemTotal:"):
+            mem_mb = int(line.split()[1]) // 1024
+            break
+    if not mem_mb or mem_mb >= _SWAP_WARN_MAX_RAM_MB:
+        return None
+
+    backing = []
+    for line in swaps.splitlines()[1:]:  # skip the header row
+        parts = line.split()
+        if len(parts) >= 3 and not parts[0].startswith("/dev/zram"):
+            backing.append((parts[0], int(parts[2]) // 1024))
+    total_mb = sum(mb for _, mb in backing)
+    if total_mb < _SWAP_WARN_MIN_MB:
+        return None
+
+    return (
+        f"Swap is {total_mb} MB ({', '.join(p for p, _ in backing)}) on a "
+        f"{mem_mb} MB board. If you raised it to build the dependencies, restore "
+        f"it — see INSTALL-NATIVE.md Part 3. A large swapfile on an SD card "
+        f"wears the card out."
+    )
+
+
+def _warn_on_large_swap() -> None:
+    try:
+        with open("/proc/meminfo") as f:
+            meminfo = f.read()
+        with open("/proc/swaps") as f:
+            swaps = f.read()
+    except Exception:
+        return  # not Linux, or /proc not mounted
+    message = _swap_warning(meminfo, swaps)
+    if message:
+        LOG.warning("%s", message)
+
+
+def _is_dbus_socket_failure(exc: BaseException) -> bool:
+    """True only for a genuinely dead D-Bus socket — the one fault a host
+    reboot can plausibly clear.
+
+    Deliberately excludes TimeoutError. On Python >= 3.11 (both targets: RPi
+    OS Bookworm ships 3.11, the image is 3.12) asyncio.TimeoutError *is* the
+    builtin TimeoutError, which subclasses OSError — so a plain BLE connect
+    timeout from a mower at the edge of range satisfies the broad
+    `isinstance(e, OSError)` check the callers use, and would otherwise be
+    misread as a wedged stack and count toward the reboot ladder."""
+    if isinstance(exc, TimeoutError):
+        return False
+    text = str(exc)
+    return (
+        isinstance(exc, (EOFError, ConnectionError))
+        or "EOFError" in text
+        or "Bad file descriptor" in text
+    )
 
 
 async def _reboot_host() -> bool:
@@ -316,44 +492,109 @@ async def _reboot_host() -> bool:
         return False
 
 
-async def escalate_and_exit(reason: str) -> None:
+def _reboot_hold_off(attempts: int) -> float:
+    """Seconds of back-off required before reboot number `attempts` + 1.
+    Doubles per attempt from CFG.reboot_cooldown, capped at
+    CFG.reboot_cooldown_max. With the defaults: 1h, 2h, 4h, 8h, 16h, then
+    24h from there on — ~6 days of ladder before reboot_max_attempts."""
+    return min(CFG.reboot_cooldown * (2 ** min(max(attempts, 0), 30)), CFG.reboot_cooldown_max)
+
+
+def _reboot_allowed(state: Dict[str, Any], now: float) -> bool:
+    """Tier-2 gate. Mutates `state` only to latch the give-up flag, so the
+    'giving up' line is logged once rather than on every later escalation."""
+    if not CFG.reboot_escalation_enabled:
+        return False
+    if state["bt_escalations"] < CFG.reboot_after_bt_escalations:
+        return False
+
+    attempts = state["reboot_attempts"]
+    first_reboot = state["first_reboot"]
+    expired = bool(first_reboot) and now - first_reboot >= CFG.reboot_give_up_after
+    if attempts >= CFG.reboot_max_attempts or expired:
+        if not state["reboot_gave_up"]:
+            state["reboot_gave_up"] = True
+            LOG.critical(
+                "Giving up on reboot escalation after %d reboot attempts over %.1f "
+                "days (some may have been refused — check for 'Could not reboot' "
+                "above). The host needs manual attention. Bluetooth stack restarts "
+                "continue; a successful poll re-arms the ladder.",
+                attempts, (now - first_reboot) / 86400 if first_reboot else 0.0,
+            )
+        return False
+
+    hold_off = _reboot_hold_off(attempts)
+    waited = now - state["last_reboot"]
+    if waited < hold_off:
+        LOG.warning(
+            "Reboot escalation held off — %.0f of %.0f min back-off remaining "
+            "before attempt %d/%d.",
+            (hold_off - waited) / 60, hold_off / 60, attempts + 1, CFG.reboot_max_attempts,
+        )
+        return False
+    return True
+
+
+async def escalate_and_exit(reason: str, hard_fault: bool = False) -> None:
     """Record a failed-restart streak and, once it crosses the threshold,
     try to restart the host's bluetooth stack (or, if that keeps failing to
-    help, reboot the host) before exiting for systemd to restart this
-    process. Always exits — never returns."""
+    help and `hard_fault` says the stack itself is wedged, reboot the host)
+    before exiting for systemd to restart this process.
+
+    `hard_fault` must only be True for a dead D-Bus socket. An unreachable
+    mower is not a host fault and never reaches tier 2, no matter how long
+    it lasts. Always exits — never returns."""
     state = _read_restart_state()
-    streak = state.get("streak", 0) + 1
-    last_escalation = state.get("last_escalation", 0.0)
-    bt_escalations = state.get("bt_escalations", 0)
-    last_reboot = state.get("last_reboot", 0.0)
+    streak = state["streak"] + 1
     now = dt.datetime.now().timestamp()
     LOG.error("%s (failed-restart streak: %d)", reason, streak)
 
-    if streak >= CFG.bt_restart_threshold and now - last_escalation >= CFG.bt_restart_cooldown:
-        bt_escalations += 1
+    if (
+        CFG.bt_restart_threshold > 0
+        and streak >= CFG.bt_restart_threshold
+        and now - state["last_escalation"] >= CFG.bt_restart_cooldown
+    ):
+        # Clamp so the counter can't grow without bound across a long outage.
+        state["bt_escalations"] = min(state["bt_escalations"] + 1, CFG.reboot_after_bt_escalations)
+        state["streak"] = 0
+        state["last_escalation"] = now
 
-        if (
-            CFG.reboot_escalation_enabled
-            and bt_escalations >= CFG.reboot_after_bt_escalations
-            and now - last_reboot >= CFG.reboot_cooldown
-        ):
+        if hard_fault and _reboot_allowed(state, now):
+            state["reboot_attempts"] += 1
+            state["last_reboot"] = now
+            state["bt_escalations"] = 0
+            if not state["first_reboot"]:
+                state["first_reboot"] = now
             LOG.critical(
-                "Bluetooth stack restart didn't help after %d attempts — rebooting the host...",
-                bt_escalations,
+                "Bluetooth stack still wedged after %d restarts — rebooting the host "
+                "(attempt %d/%d, next back-off %.0f min)...",
+                CFG.reboot_after_bt_escalations, state["reboot_attempts"],
+                CFG.reboot_max_attempts, _reboot_hold_off(state["reboot_attempts"]) / 60,
             )
-            await _reboot_host()
-            state = {"streak": 0, "last_escalation": now, "bt_escalations": 0, "last_reboot": now}
-        else:
-            LOG.critical(
-                "Still unreachable after %d process restarts — restarting the "
-                "bluetooth stack to clear a possibly wedged BlueZ/D-Bus adapter...",
-                streak,
-            )
-            await _restart_systemd_unit("bluetooth.service")
-            await _restart_systemd_unit("bt-agent.service")
-            state = {"streak": 0, "last_escalation": now, "bt_escalations": bt_escalations, "last_reboot": last_reboot}
+            # Persist *before* asking logind to reboot: the call returns as
+            # soon as shutdown is queued, and losing this write would reset
+            # the back-off to zero on the next boot.
+            _write_restart_state(state)
+            if not await _reboot_host():
+                # Still alive, so the reboot was refused (missing polkit rule
+                # or no polkitd). The attempt is deliberately still counted —
+                # retrying a refused call forever helps nobody — but say so,
+                # or the give-up line below reads as if reboots had happened.
+                LOG.error(
+                    "Host was NOT rebooted — escalation attempt %d/%d counted anyway.",
+                    state["reboot_attempts"], CFG.reboot_max_attempts,
+                )
+            sys.exit(1)
+
+        LOG.critical(
+            "Still unreachable after %d process restarts — restarting the "
+            "bluetooth stack to clear a possibly wedged BlueZ/D-Bus adapter...",
+            CFG.bt_restart_threshold,
+        )
+        await _restart_systemd_unit("bluetooth.service")
+        await _restart_systemd_unit("bt-agent.service", required=False)
     else:
-        state = {"streak": streak, "last_escalation": last_escalation, "bt_escalations": bt_escalations, "last_reboot": last_reboot}
+        state["streak"] = streak
 
     _write_restart_state(state)
     sys.exit(1)
@@ -404,7 +645,10 @@ async def connect_mower() -> Tuple[Optional[Mower], Optional[int]]:
         LOG.exception("Failed to connect to mower")
         err_str = str(e)
         if isinstance(e, (EOFError, OSError)) or "EOFError" in err_str or "Bad file descriptor" in err_str:
-            await escalate_and_exit(f"Critical D-Bus socket failure detected ({e}). Exiting process to trigger systemd restart...")
+            await escalate_and_exit(
+                f"Critical D-Bus socket failure detected ({e}). Exiting process to trigger systemd restart...",
+                hard_fault=_is_dbus_socket_failure(e),
+            )
         return None, None
 
 
@@ -488,7 +732,7 @@ async def safe_mower_command(mower: Mower, cmd: str, optional: bool = False, **k
 
 async def get_static_info(mower: Mower) -> Dict[str, Any]:
     """Collect one-time, unchanging mower info: model, serial, name, schedule."""
-    info: Dict[str, Any] = {}
+    info: Dict[str, Any] = {"BridgeVersion": VERSION}
     try:
         manufacturer = await mower.get_manufacturer()
         model = await mower.get_model()
@@ -1335,6 +1579,7 @@ async def main() -> None:
     global custom_mow_duration, bridge_paused, static_info, last_schedule_refresh
 
     LOG.info("GardenaMower-BLE-MQTT v%s starting...", VERSION)
+    _warn_on_large_swap()
 
     # Resolve MAC address if not configured or using placeholder
     is_placeholder = (
@@ -1397,7 +1642,10 @@ async def main() -> None:
         except Exception as e:
             err_str = str(e)
             if isinstance(e, (EOFError, OSError)) or "EOFError" in err_str or "Bad file descriptor" in err_str:
-                await escalate_and_exit(f"Critical D-Bus socket error during poll cycle ({e}). Exiting process to trigger systemd restart...")
+                await escalate_and_exit(
+                    f"Critical D-Bus socket error during poll cycle ({e}). Exiting process to trigger systemd restart...",
+                    hard_fault=_is_dbus_socket_failure(e),
+                )
             LOG.warning("Poll cycle skipped — mower unreachable (out of range, or app connected)")
             return {}
 
@@ -1445,6 +1693,7 @@ async def main() -> None:
     mower_base_topic = f"{CFG.mqtt_base_topic}/{mower_id}"
     availability_topic = f"{mower_base_topic}/availability"
     mower_topic = f"{mower_base_topic}/mower"
+    bridge_topic = f"{mower_base_topic}/bridge"
     LOG.info("MQTT device topic: %s", mower_base_topic)
 
     # Start the watchdog heartbeat task
@@ -1468,6 +1717,11 @@ async def main() -> None:
             ) as client:
 
                 await client.publish(availability_topic, "online", retain=True)
+                # Retained and published before any BLE work, so the bridge
+                # version is readable even if the mower is never reachable.
+                await client.publish(
+                    bridge_topic, json.dumps({"Version": VERSION}), retain=True
+                )
                 LOG.info("MQTT connected ✅")
 
                 await client.subscribe(f"{mower_base_topic}/command")
@@ -1512,6 +1766,8 @@ async def main() -> None:
 
                             # If mower remains unreachable for 10 consecutive polls (~10 minutes),
                             # exit process so systemd (Restart=always) restarts Python with a fresh D-Bus socket.
+                            # Not a hard fault: a mower can be legitimately away for weeks, so this
+                            # escalates at most to a bluetooth.service restart, never to a reboot.
                             if consecutive_poll_failures >= 10:
                                 await escalate_and_exit(
                                     f"Mower unreachable for {consecutive_poll_failures} consecutive polls. "

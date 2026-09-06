@@ -47,12 +47,15 @@ Tested down to a **Raspberry Pi Zero W (1st generation)**.
    ```
 5. **If you're on a low-RAM board (Pi Zero W/2 W):** temporarily increase swap, since some Python dependencies may need to be compiled from source and can otherwise run out of memory:
    ```bash
+   grep CONF_SWAPSIZE /etc/dphys-swapfile   # note this value, you restore it in Part 3
    sudo nano /etc/dphys-swapfile
    ```
    Set `CONF_SWAPSIZE=1024`, save, then:
    ```bash
    sudo systemctl restart dphys-swapfile
    ```
+   > [!IMPORTANT]
+   > This is temporary. Part 3 restores it — a permanent 1 GB swapfile wears out the SD card.
 
 ---
 
@@ -109,6 +112,17 @@ pip3 install --no-cache-dir --ignore-requires-python -r requirements.txt
 
 On a Pi Zero W, dependency installation can take 20–40 minutes if any packages need to be compiled from source. Let it run.
 
+**If you raised swap in Part 1 step 5, put it back now:**
+```bash
+sudo nano /etc/dphys-swapfile
+```
+Restore `CONF_SWAPSIZE` to the value you noted, save, then:
+```bash
+sudo systemctl restart dphys-swapfile
+free -h   # Swap should be back to its original size
+```
+The bridge warns at startup if this is left raised.
+
 ---
 
 ## Part 4 — Configure it
@@ -139,9 +153,13 @@ Configure your MQTT broker connection details, mower PIN, and settings inside `m
 Before setting up the service, run it directly so you can see what's happening live:
 
 ```bash
-export $(grep -v '^#' mower.env | xargs)
+while IFS= read -r line || [ -n "$line" ]; do
+  case "$line" in ""|"#"*) continue ;; esac
+  export "$line"
+done < mower.env
 python3 mower_mqtt.py
 ```
+This reads `mower.env` the same way `systemd`'s `EnvironmentFile=` will in Part 6 — the value is everything after the first `=`, taken literally. Do not use `source mower.env` or `export $(... | xargs)`: both apply shell quoting, which mangles any password containing a space, `$`, `#` or a backtick.
 
 ### Put the mower in pairing mode & enter PIN
 
@@ -177,8 +195,8 @@ sudo nano /etc/systemd/system/mower-mqtt.service
 ```ini
 [Unit]
 Description=Gardena Mower BLE to MQTT Bridge
-After=network.target bluetooth.target bt-agent.service
-Requires=bt-agent.service
+After=network-online.target bluetooth.service bt-agent.service
+Wants=network-online.target bt-agent.service
 
 [Service]
 Type=simple
@@ -195,6 +213,8 @@ KillMode=mixed
 WantedBy=multi-user.target
 ```
 
+`Wants=` rather than `Requires=` for `bt-agent.service`: the pairing agent is only needed while pairing, and with `Requires=` a `bt-agent` that fails to come back during auto-recovery would stop this service — which `Restart=always` does not undo.
+
 Enable and start it:
 ```bash
 sudo systemctl daemon-reload
@@ -209,6 +229,11 @@ From now on, this bonding is remembered by the host — you will **not** need to
 ## Bluetooth stack auto-recovery (optional, recommended)
 This will automatically restart the Bluetooth stack if it permanently crashes.
 
+The escalation goes over polkit, not `sudo`. On Raspberry Pi OS Lite, polkit is not always installed — without it every rule below is silently ignored:
+```bash
+sudo apt install -y polkitd
+```
+
 ```bash
 sudo tee /etc/polkit-1/rules.d/49-mower-mqtt.rules > /dev/null <<'EOF'
 polkit.addRule(function(action, subject) {
@@ -219,17 +244,30 @@ polkit.addRule(function(action, subject) {
     }
 });
 polkit.addRule(function(action, subject) {
-    if (subject.user === "pi" && action.id === "org.freedesktop.login1.reboot") {
+    if (subject.user === "pi" &&
+        (action.id === "org.freedesktop.login1.reboot" ||
+         action.id === "org.freedesktop.login1.reboot-multiple-sessions")) {
         return polkit.Result.YES;
     }
 });
 EOF
 ```
 If you used a different username than `pi` when creating `mower-mqtt.service` earlier, use that instead.
-Tuning: `BLUETOOTH_RESTART_*` in `mower.env.example`.
+
+`reboot-multiple-sessions` is required whenever anyone else is logged in — without it the reboot fails while you are on SSH and succeeds when you are not.
+
+Verify:
+```bash
+sudo systemctl restart polkit
+pkcheck --action-id org.freedesktop.login1.reboot --process $$ && echo "reboot authorized"
+```
+Tuning: `BLUETOOTH_RESTART_*` in `mower.env.example`. Set `BLUETOOTH_RESTART_THRESHOLD=0` to turn the whole escalation off.
 
 ### Last-resort host reboot (optional, off by default)
-This will automatically reboot the host if Bluetooth permanently crashes even after Bluetooth stack restart.
+This will automatically reboot the host if the Bluetooth stack is wedged (a dead D-Bus socket) even after `bluetooth.service` has been restarted.
+
+> [!IMPORTANT]
+> A mower that simply does not answer — out of range, powered off, away for the winter, in for service, or the official Gardena app holding its single BLE slot — is **not** a host fault and never triggers a reboot. Only a dead D-Bus socket does.
 
 ```bash
 cd ~/GardenaMower-BLE-MQTT
@@ -237,13 +275,23 @@ nano mower.env
 ```
 Change `# REBOOT_ESCALATION_ENABLED=false` to `REBOOT_ESCALATION_ENABLED=true`, then save (Ctrl+O, Enter) and exit (Ctrl+X).
 
+The ladder is bounded — it will not reboot-loop your Pi. Each reboot waits twice as long as the last (1h, 2h, 4h, 8h, 16h, then 24h), and it gives up entirely after `REBOOT_MAX_ATTEMPTS` (10) or `REBOOT_GIVE_UP_AFTER` (7 days), whichever comes first — roughly 10 reboots spread over 6.5 days, then it stops and logs `Giving up on reboot escalation`. A successful poll clears the ladder.
+
+> [!WARNING]
+> Reboots are the most write-intensive thing a Pi does. On an SD-card Pi Zero W, do not raise `REBOOT_MAX_ATTEMPTS` or lower `REBOOT_COOLDOWN`.
+
+State lives in `.mower_restart_state` in the project directory. Delete it to reset the counters by hand:
+```bash
+rm -f ~/GardenaMower-BLE-MQTT/.mower_restart_state
+```
+
 Tuning: see `REBOOT_*` examples in `mower.env.example`.
 
 ---
 
 ## Coexisting with the official Gardena app
 
-A BLE mower accepts only **one** connection at a time. This bridge connects only briefly during each poll cycle (roughly every `MOWER_POLL` seconds) and for the moment it takes to send a command, then disconnects — it never holds the connection open. The official app should be able to connect the rest of the time without a fight. For guaranteed conflict-free access (e.g. a firmware update), use `BRIDGE_PAUSE` / `BRIDGE_RESUME` as described above.
+A BLE mower accepts only **one** connection at a time. This bridge connects only briefly during each poll cycle (roughly every `MOWER_POLL` seconds) and for the moment it takes to send a command, then disconnects — it never holds the connection open. The official app should be able to connect the rest of the time without a fight. For guaranteed conflict-free access (e.g. a firmware update), publish `BRIDGE_PAUSE` to `<MOWER_BASE_TOPIC>/command` and `BRIDGE_RESUME` when you're done. While paused the bridge counts no poll failures, so it will not escalate.
 
 ---
 
@@ -257,6 +305,27 @@ pip3 install --no-cache-dir --ignore-requires-python --upgrade -r requirements.t
 sudo systemctl restart mower-mqtt.service
 ```
 No pairing repeat needed — bonding is preserved on the host.
+
+### One-time steps when upgrading from 1.6.x
+
+`git pull` only updates the project directory. Three fixes live outside it and need applying by hand once:
+
+1. **Swap.** If you raised it during install and never put it back, the SD card has been running on a 1 GB swapfile ever since:
+   ```bash
+   grep CONF_SWAPSIZE /etc/dphys-swapfile   # 1024 = never restored
+   ```
+   Restore it as in Part 3. From 1.7.0 the bridge also warns about this at startup:
+   ```
+   Swap is 1024 MB (/var/swap) on a 432 MB board. If you raised it to build the dependencies, restore it
+   ```
+2. **Polkit rule.** Re-run the `tee` command in [Bluetooth stack auto-recovery](#bluetooth-stack-auto-recovery-optional-recommended) — it gained `reboot-multiple-sessions`, without which reboots fail whenever anyone is logged in.
+3. **Unit file.** In `/etc/systemd/system/mower-mqtt.service`, replace the `After=`/`Requires=` lines with the `After=`/`Wants=` lines from Part 6, then:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl restart mower-mqtt.service
+   ```
+
+`mower.env` is untouched — the new `REBOOT_*` options all default safely. Existing counters in `.mower_restart_state` carry over.
 
 ---
 
@@ -293,5 +362,12 @@ bluetoothctl remove <MOWER_MAC>
 - **Pairing fails or times out**: the mower's pairing window (~2–3 minutes) likely closed before you connected — power-cycle the mower to put it back in pairing mode and try again. Make sure you're entering the PIN on the mower's own buttons, not just relying on `MOWER_PIN` in the config.
 - **`MOW` command is accepted but the mower doesn't physically move**: check that the charging station / boundary wire isn't in a power-saving mode with its signal disabled — the mower will accept the BLE command but refuses to move without an active guide wire signal. Check this in the Gardena app.
 - **Can't connect with the official Gardena app while the bridge is running**: publish `BRIDGE_PAUSE` to the command topic first, `BRIDGE_RESUME` when you're done.
-- **Status stops updating after a while**: check `journalctl -u mower-mqtt.service -f` for errors; the bridge automatically reconnects on BLE drops, but a fully unreachable mower (out of range, powered off) will simply show no new status until it's reachable again.
+- **Status stops updating after a while**: check `journalctl -u mower-mqtt.service -f` for errors; the bridge automatically reconnects on BLE drops. A fully unreachable mower (out of range, powered off) publishes `offline` and shows no new status until it's reachable again. The bridge does restart its own process every ~12 minutes while unreachable, and may restart `bluetooth.service`, but it will not reboot the host for this.
+- **The Pi reboots by itself**: only possible with `REBOOT_ESCALATION_ENABLED=true`. Check the history and the counters:
+  ```bash
+  last -x reboot | head
+  cat ~/GardenaMower-BLE-MQTT/.mower_restart_state
+  grep -a "rebooting the host\|Giving up on reboot" ~/GardenaMower-BLE-MQTT/logs/mower.log
+  ```
+  Set `REBOOT_ESCALATION_ENABLED=false` to stop it immediately. Repeated reboots point at a genuinely wedged Bluetooth adapter — a USB BLE dongle is usually the real fix.
 - **Still stuck**: open an issue on the [GitHub repository](https://github.com/gruijter/GardenaMower-BLE-MQTT) with your `journalctl` output attached.

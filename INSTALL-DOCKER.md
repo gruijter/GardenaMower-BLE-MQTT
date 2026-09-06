@@ -163,9 +163,21 @@ From now on, this bonding is remembered by the host — you will **not** need to
 
 ---
 
+## Bluetooth stack auto-recovery
+
+A privileged container shares the host's D-Bus, so the same escalation as the native install applies with no polkit rule needed: repeated failed reconnects restart `bluetooth.service` on the **host**.
+
+`REBOOT_ESCALATION_ENABLED=true` reboots the **host**, not the container. It is off by default and only fires on a wedged D-Bus socket, never on an unreachable mower. See `BLUETOOTH_RESTART_*` / `REBOOT_*` in `mower.env.example`, and the ladder details in [INSTALL-NATIVE.md](INSTALL-NATIVE.md#last-resort-host-reboot-optional-off-by-default).
+
+Two Docker specifics:
+- The counters live in `./state`, mounted by `docker-compose.yml`. They must outlive the container — without that volume the reboot back-off resets on every `docker compose up -d`. Delete `./state/.mower_restart_state` to reset them by hand (Docker creates `./state` root-owned, so this needs `sudo`).
+- The pairing agent runs inside the container, so there is no `bt-agent.service` on the host. The bridge skips it. After a `bluetooth.service` restart the in-container agent is no longer registered; run `docker compose restart` if you need to re-pair.
+
+---
+
 ## Coexisting with the official Gardena app
 
-A BLE mower accepts only **one** connection at a time. This bridge connects only briefly during each poll cycle (roughly every `MOWER_POLL` seconds) and for the moment it takes to send a command, then disconnects — it never holds the connection open. The official app should be able to connect the rest of the time without a fight. For guaranteed conflict-free access (e.g. a firmware update), use `BRIDGE_PAUSE` / `BRIDGE_RESUME` as described above.
+A BLE mower accepts only **one** connection at a time. This bridge connects only briefly during each poll cycle (roughly every `MOWER_POLL` seconds) and for the moment it takes to send a command, then disconnects — it never holds the connection open. The official app should be able to connect the rest of the time without a fight. For guaranteed conflict-free access (e.g. a firmware update), publish `BRIDGE_PAUSE` to `<MOWER_BASE_TOPIC>/command` and `BRIDGE_RESUME` when you're done. While paused the bridge counts no poll failures, so it will not escalate.
 
 ---
 
@@ -173,10 +185,19 @@ A BLE mower accepts only **one** connection at a time. This bridge connects only
 
 ```bash
 cd GardenaMower-BLE-MQTT
+git pull            # picks up docker-compose.yml changes, not just the image
 docker compose pull
 docker compose up -d
 ```
 No pairing repeat needed — bonding is preserved on the host.
+
+### Upgrading from 1.6.x
+
+`git pull` now matters: `docker-compose.yml` gained the `./state` volume. If you edited that file locally — e.g. swapped `image:` for `build: .` — the pull will abort. `git stash`, pull, then re-apply your change.
+
+Without the new volume the bridge still runs, but the escalation counters stay in the container layer and reset on every `docker compose up -d`.
+
+The counters reset once during this upgrade, as they move out of the container layer.
 
 ---
 

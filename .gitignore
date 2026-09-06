@@ -2,6 +2,8 @@ mower.log
 logs/
 mower.env
 .mower_restart_state
+.mower_restart_state.tmp
+state/
 
 # Python
 .venv/
