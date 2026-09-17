@@ -19,7 +19,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
-VERSION = "1.7.0"
+VERSION = "1.7.1"
 
 import asyncio
 import gzip
@@ -664,8 +664,21 @@ UNSUPPORTED_COMMANDS_WHITELIST = {
     "GetFrostSensorEnabledLegacy",
     "GetEcoModeEnabled",
     "GetRemainingChargingTime",
-    "GetTime"
+    "GetTime",
+    # The 305 answers these with a 1-byte payload the parser rejects, every poll
+    "GetBatteryCurrent",
+    "GetBatteryTemperature"
 }
+
+# Some mowers answer GetBatteryLevel with 0% on every other connection while the pack
+# is actually full, so the reading alternates 99/0/99/0 for hours. A real discharge to
+# empty never happens in a single poll, so hold the last plausible level across a short
+# burst of zeroes -- but give up after BATTERY_ZERO_HOLD_POLLS so a mower that genuinely
+# runs flat is still reported.
+BATTERY_ZERO_HOLD_POLLS = 3
+_last_good_battery: Optional[int] = None
+_battery_zero_polls = 0
+_battery_hold_warned = False
 
 
 async def safe_mower_command(mower: Mower, cmd: str, optional: bool = False, **kwargs) -> Any:
@@ -951,6 +964,35 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
         # LastError represents active error status. If the mower is not in an error state, report UNKNOWN so Homey clears alarm_stuck.
         active_last_error = last_error_name if is_error_state else "UNKNOWN"
 
+        # Ride out a spurious 0%. The mower reporting a flat battery itself is always
+        # believed; so is a 0% that persists, and so is the very first reading.
+        global _last_good_battery, _battery_zero_polls, _battery_hold_warned
+        battery = int(battery)
+        if (
+            battery == 0
+            and _last_good_battery
+            and last_error_name not in ("LOW_BATTERY", "EMPTY_BATTERY")
+        ):
+            _battery_zero_polls += 1
+            if _battery_zero_polls <= BATTERY_ZERO_HOLD_POLLS:
+                # A mower that does this does it every other poll, so say it once
+                # per run at WARNING and keep the rest for DEBUG.
+                log_hold = LOG.debug if _battery_hold_warned else LOG.warning
+                log_hold(
+                    "Mower reported Battery=0%% while last plausible level was %d%% "
+                    "(%d/%d), holding the previous value",
+                    _last_good_battery, _battery_zero_polls, BATTERY_ZERO_HOLD_POLLS,
+                )
+                _battery_hold_warned = True
+                battery = _last_good_battery
+            else:
+                LOG.warning("Battery=0%% persists over %d polls, accepting it as the real level",
+                            _battery_zero_polls)
+                _last_good_battery = 0
+        else:
+            _battery_zero_polls = 0
+            _last_good_battery = battery
+
         activity_name = MowerActivity(activity).name
 
         # Read the override unconditionally. A forced mow issued while the mower is still
@@ -1142,7 +1184,14 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
         # Battery details (Voltage, Current, Temperature)
         batt_volt = await safe_mower_command(mower, "GetBatteryVoltage", optional=True)
         if batt_volt is not None:
-            status["batteryVoltage"] = round(batt_volt / 1000.0, 2)
+            # The protocol types this register as uint16, but the 305 answers signed:
+            # -5 mV arrives as 65531 and would be published as 65.53 V.
+            if batt_volt > 0x7FFF:
+                batt_volt -= 0x10000
+            if batt_volt > 0:
+                status["batteryVoltage"] = round(batt_volt / 1000.0, 2)
+            else:
+                LOG.debug("Ignoring implausible battery voltage: %d mV", batt_volt)
             
         batt_curr = await safe_mower_command(mower, "GetBatteryCurrent", optional=True)
         if batt_curr is not None:

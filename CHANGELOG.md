@@ -2,6 +2,13 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Starts at 1.5.0 — earlier history is in `git log`.
 
+## [1.7.1] - 2026-09-17
+
+### Fixed
+- A mower answering `GetBatteryLevel` with 0% on alternating polls no longer publishes 0%. The last plausible level is held for up to 3 polls; a level the mower confirms with `LOW_BATTERY`/`EMPTY_BATTERY`, a 0% that persists, and the first reading after startup are all published as-is.
+- `batteryVoltage` is read as signed. A negative reading arrived as 65531 and was published as 65.53 V; non-positive readings are now dropped.
+- `GetBatteryCurrent` and `GetBatteryTemperature` are cached as unsupported when the mower answers with a payload the parser rejects, instead of being retried every poll.
+
 ## [1.7.0] - 2026-09-06
 
 ### Added
