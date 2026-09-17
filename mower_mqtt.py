@@ -968,6 +968,8 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
         # believed; so is a 0% that persists, and so is the very first reading.
         global _last_good_battery, _battery_zero_polls, _battery_hold_warned
         battery = int(battery)
+        battery_raw = battery
+        battery_held = False
         if (
             battery == 0
             and _last_good_battery
@@ -985,6 +987,7 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
                 )
                 _battery_hold_warned = True
                 battery = _last_good_battery
+                battery_held = True
             else:
                 LOG.warning("Battery=0%% persists over %d polls, accepting it as the real level",
                             _battery_zero_polls)
@@ -1237,7 +1240,8 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
         # Pack readings alongside the gauge percentage: when a mower reports an
         # implausible battery level, voltage/current/temperature are what tell a
         # real pack problem apart from a bad percentage reading.
-        batt_detail = ", ".join(
+        batt_parts = ["held, mower said %d%%" % battery_raw] if battery_held else []
+        batt_parts += [
             "%s=%s" % (label, status[key])
             for key, label in (
                 ("batteryVoltage", "Volt"),
@@ -1245,7 +1249,8 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
                 ("batteryTemperature", "Temp"),
             )
             if status.get(key) is not None
-        )
+        ]
+        batt_detail = ", ".join(batt_parts)
         batt_note = " (%s)" % batt_detail if batt_detail else ""
 
         LOG.info(
