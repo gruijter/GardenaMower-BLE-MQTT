@@ -27,7 +27,7 @@ The bridge uses the mower's **Bluetooth MAC address** as the unique device ident
 | `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/command` | no | Publish commands here to control the mower |
 | `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/availability` | ✅ yes | Bridge status: `online` / `offline`. Uses MQTT Last Will Testament — broker auto-publishes `offline` on crash |
 | `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/mower` | ✅ yes | Mower reachability: `online` when last BLE poll succeeded, `offline` after 2 consecutive failed polls |
-| `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/bridge` | ✅ yes | Bridge info as JSON, e.g. `{"Version": "1.7.0"}`. Published on MQTT connect, before any BLE activity |
+| `<MOWER_BASE_TOPIC>/<AA_BB_CC_DD_EE_FF>/bridge` | ✅ yes | Bridge info as JSON, e.g. `{"Version": "1.7.1", "LatestVersion": "1.8.0", "UpdateAvailable": true}`. Published on MQTT connect, before any BLE activity. `LatestVersion` is the newest version in the GitHub CHANGELOG, checked every `UPDATE_CHECK_INTERVAL` seconds |
 
 **Combined state interpretation:**
 

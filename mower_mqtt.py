@@ -29,8 +29,10 @@ import os
 import shutil
 import sys
 import datetime as dt
+import re
 import signal
 import contextlib
+import urllib.request
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, Tuple, Awaitable, Callable
 
@@ -153,6 +155,9 @@ class Config:
     # the defaults both land at roughly a week.
     reboot_max_attempts: int = int(os.getenv("REBOOT_MAX_ATTEMPTS", 10))
     reboot_give_up_after: int = int(os.getenv("REBOOT_GIVE_UP_AFTER", 604800))
+    # Seconds between checks of the GitHub CHANGELOG for a newer bridge
+    # version. 0 disables the check.
+    update_check_interval: int = max(0, int(os.getenv("UPDATE_CHECK_INTERVAL", 86400)))
 
 CFG = Config()
 
@@ -1617,6 +1622,61 @@ async def discover_mower_mac() -> Optional[str]:
 
 
 # ----------------------------
+# Update check
+# ----------------------------
+CHANGELOG_URL = "https://raw.githubusercontent.com/gruijter/GardenaMower-BLE-MQTT/main/CHANGELOG.md"
+
+latest_version: Optional[str] = None
+last_update_check: float = 0.0
+
+
+def _version_tuple(version: str) -> Tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+def _fetch_latest_version() -> Optional[str]:
+    """Newest `## [x.y.z]` heading in the CHANGELOG on GitHub main."""
+    req = urllib.request.Request(CHANGELOG_URL, headers={"User-Agent": f"GardenaMower-BLE-MQTT/{VERSION}"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        text = resp.read().decode("utf-8", errors="replace")
+    versions = re.findall(r"^## \[(\d+\.\d+\.\d+)\]", text, re.MULTILINE)
+    return max(versions, key=_version_tuple) if versions else None
+
+
+def bridge_info() -> Dict[str, Any]:
+    info: Dict[str, Any] = {"Version": VERSION}
+    if latest_version:
+        info["LatestVersion"] = latest_version
+        info["UpdateAvailable"] = _version_tuple(latest_version) > _version_tuple(VERSION)
+    return info
+
+
+async def update_check_loop(client: aiomqtt.Client, bridge_topic: str) -> None:
+    """Periodically republish the retained bridge topic with the latest
+    version found on GitHub. Failures are ignored (e.g. no internet)."""
+    global latest_version, last_update_check
+    loop = asyncio.get_event_loop()
+    while not shutdown_event.is_set():
+        wait = last_update_check + CFG.update_check_interval - loop.time()
+        if last_update_check and wait > 0:
+            await asyncio.sleep(wait)
+            continue
+        last_update_check = loop.time()
+        try:
+            found = await asyncio.to_thread(_fetch_latest_version)
+        except Exception as e:
+            LOG.debug("Update check failed: %s", e)
+            continue
+        if not found or found == latest_version:
+            continue
+        latest_version = found
+        info = bridge_info()
+        if info.get("UpdateAvailable"):
+            LOG.info("Bridge update available: v%s (running v%s)", latest_version, VERSION)
+        await client.publish(bridge_topic, json.dumps(info), retain=True)
+
+
+# ----------------------------
 # Main Loop
 # ----------------------------
 async def main() -> None:
@@ -1743,6 +1803,7 @@ async def main() -> None:
     # Start the watchdog heartbeat task
     asyncio.create_task(heartbeat_task(availability_topic))
 
+    update_task: Optional[asyncio.Task] = None
     while not shutdown_event.is_set():
         try:
             # LWT: broker auto-publishes 'offline' on ungraceful disconnect/crash
@@ -1763,10 +1824,13 @@ async def main() -> None:
                 await client.publish(availability_topic, "online", retain=True)
                 # Retained and published before any BLE work, so the bridge
                 # version is readable even if the mower is never reachable.
-                await client.publish(
-                    bridge_topic, json.dumps({"Version": VERSION}), retain=True
-                )
+                await client.publish(bridge_topic, json.dumps(bridge_info()), retain=True)
                 LOG.info("MQTT connected ✅")
+                update_task = (
+                    asyncio.create_task(update_check_loop(client, bridge_topic))
+                    if CFG.update_check_interval
+                    else None
+                )
 
                 await client.subscribe(f"{mower_base_topic}/command")
                 LOG.info("Subscribed to %s/command", mower_base_topic)
@@ -1838,6 +1902,9 @@ async def main() -> None:
         except Exception as e:
             LOG.error("MQTT loop error: %s", e)
             await asyncio.sleep(5)
+        finally:
+            if update_task:
+                update_task.cancel()
 
     LOG.info("Shutting down...")
     with contextlib.suppress(Exception):
