@@ -662,6 +662,7 @@ UNSUPPORTED_COMMANDS_WHITELIST = {
     "GetAntiCollisionRadar",
     "GetFrostSensorEnabled",
     "GetEcoModeEnabled",
+    "GetLiftSensorLegacy",
     "GetRemainingChargingTime",
     "GetTime",
     # The 305 answers these with a 1-byte payload the parser rejects, every poll
@@ -1113,6 +1114,12 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
             roll = await safe_mower_command(mower, "GetOrientationRoll", optional=True)
             if roll is not None:
                 status["roll"] = roll
+            # 4476/6, the register once misread as a legacy frost setting. Only
+            # queried when GetComboardSensorData is unsupported, which already
+            # carries lift.
+            lift_legacy = await safe_mower_command(mower, "GetLiftSensorLegacy", optional=True)
+            if lift_legacy is not None:
+                status["lift"] = bool(lift_legacy)
 
         # Tilt and Collision sensor status mapping based on active error code
         # In the Gardena app: "Tilsensor" (tilt / lift) and "Botssensor" (collision)

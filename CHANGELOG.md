@@ -4,6 +4,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Starts at 1.5.
 
 ## [1.7.1] - 2026-09-18
 
+### Added
+- `lift` falls back to `GetLiftSensorLegacy` (4476/6) on mowers where `GetComboardSensorData` is unsupported.
+
 ### Fixed
 - `FROST_SENSOR` wrote to register 4476, which is lift sensing, not frost. On models where `GetFrostSensorEnabled` is unsupported this fallback ran first. Frost is 5370 only.
 - `frostSensorEnabled` reported `ON` whenever the mower was lifted, because the 4476 reading was OR'd into it.
@@ -13,7 +16,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Starts at 1.5.
 - `GetBatteryCurrent` and `GetBatteryTemperature` are cached as unsupported when the mower answers with a payload the parser rejects, instead of being retried every poll.
 
 ### Removed
-- `GetFrostSensorEnabledLegacy` / `SetFrostSensorEnabledLegacy` are no longer used.
+- `GetFrostSensorEnabledLegacy` / `SetFrostSensorEnabledLegacy`, both gone from the `automower-ble` dependency. Register 4476/6 is now read as `GetLiftSensorLegacy`; 4476/5 is no longer written to at all.
 
 ## [1.7.0] - 2026-09-06
 
