@@ -661,7 +661,6 @@ UNSUPPORTED_COMMANDS_WHITELIST = {
     "GetNodeIprId",
     "GetAntiCollisionRadar",
     "GetFrostSensorEnabled",
-    "GetFrostSensorEnabledLegacy",
     "GetEcoModeEnabled",
     "GetRemainingChargingTime",
     "GetTime",
@@ -1129,12 +1128,12 @@ async def collect_status(mower: Mower, static_info: Optional[Dict[str, Any]] = N
         else:
             status["collisionSensor"] = "Oké"
 
-        # Frost sensor (try regular and legacy)
+        # Frost sensor. 5370/1 only -- 4476/6 was read here as a "legacy frost"
+        # fallback, but it is a lift sensor, so OR-ing it in reported frost as ON
+        # whenever the mower was lifted.
         frost_sensor = await safe_mower_command(mower, "GetFrostSensorEnabled", optional=True)
-        legacy_frost = await safe_mower_command(mower, "GetFrostSensorEnabledLegacy", optional=True)
-        if frost_sensor is not None or legacy_frost is not None:
-            is_enabled = bool(frost_sensor) or bool(legacy_frost)
-            status["frostSensorEnabled"] = "ON" if is_enabled else "OFF"
+        if frost_sensor is not None:
+            status["frostSensorEnabled"] = "ON" if frost_sensor else "OFF"
             
         # SensorControl
         sensor_control = await safe_mower_command(mower, "GetSensorControlEnabled", optional=True)
@@ -1419,31 +1418,15 @@ async def send_command(mower: Mower, cmd: str, args: Optional[list] = None, raw_
     elif cmd == "FROST_SENSOR":
         if args:
             enabled = args[0].upper() in ("ON", "TRUE", "1")
-            
-            # If standard GetFrostSensorEnabled is already cached as unsupported, try legacy first
-            if "GetFrostSensorEnabled" in UNSUPPORTED_COMMANDS:
-                LOG.info("GetFrostSensorEnabled is cached as unsupported. Trying legacy SetFrostSensorEnabledLegacy...")
-                res, _ = await mower.command_response("SetFrostSensorEnabledLegacy", enabled=enabled)
-                if res == ResponseResult.OK:
-                    LOG.info("Set legacy frost sensor enabled to %s ✅", enabled)
-                    return
-                LOG.warning("SetFrostSensorEnabledLegacy failed with %s, falling back to standard...", res)
 
-            # Try standard command
+            # 4476/5 was previously used as a "legacy frost" fallback here, but
+            # 4476 is lift sensing: probing 4476/6 on a Minimo 250 tracks physical
+            # lift, not the frost setting. Never write to it. Frost is 5370/2 only.
             res, _ = await mower.command_response("SetFrostSensorEnabled", enabled=enabled)
             if res == ResponseResult.OK:
                 LOG.info("Set frost sensor enabled to %s ✅", enabled)
             else:
-                # If standard failed and we haven't tried legacy yet, try legacy
-                if "GetFrostSensorEnabled" not in UNSUPPORTED_COMMANDS:
-                    LOG.info("SetFrostSensorEnabled failed with %s, trying legacy SetFrostSensorEnabledLegacy...", res)
-                    res_legacy, _ = await mower.command_response("SetFrostSensorEnabledLegacy", enabled=enabled)
-                    if res_legacy == ResponseResult.OK:
-                        LOG.info("Set legacy frost sensor enabled to %s ✅", enabled)
-                        return
-                    raise RuntimeError(f"Failed to set frost sensor: standard returned {res}, legacy returned {res_legacy}")
-                else:
-                    raise RuntimeError(f"Failed to set frost sensor: standard returned {res}")
+                raise RuntimeError(f"Failed to set frost sensor: {res}")
         else:
             LOG.warning("FROST_SENSOR requires ON/OFF argument")
     elif cmd == "SENSOR_CONTROL":
