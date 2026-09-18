@@ -2,14 +2,10 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Starts at 1.5.0 — earlier history is in `git log`.
 
-## [Unreleased]
+## [1.8.0] - 2026-09-18
 
 ### Added
 - `LatestVersion` and `UpdateAvailable` in the retained `bridge` topic, from the GitHub CHANGELOG. `UPDATE_CHECK_INTERVAL` sets the check interval (default 86400, 0 = off).
-
-## [1.7.1] - 2026-09-18
-
-### Added
 - `lift` falls back to `GetLiftSensorLegacy` (4476/6) on mowers where `GetComboardSensorData` is unsupported.
 
 ### Fixed
