@@ -35,6 +35,14 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# automower-ble tracks a branch, so requirements.txt alone cannot tell Docker
+# that the library moved. The CI resolves combined-fixes to a commit and passes
+# it here; a new commit changes this ARG, which busts only this layer.
+# Building by hand: pass --build-arg AUTOMOWER_BLE_SHA=$(date +%s) to refresh.
+ARG AUTOMOWER_BLE_SHA=unpinned
+RUN pip install --no-cache-dir --force-reinstall --no-deps \
+        git+https://github.com/gruijter/AutoMower-BLE.git@combined-fixes
+
 COPY mower_mqtt.py .
 COPY entrypoint.sh .
 RUN chmod +x entrypoint.sh

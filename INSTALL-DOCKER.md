@@ -216,6 +216,12 @@ No pairing repeat needed — bonding is preserved on the host.
 
 `docker-compose.yml` in this repo is a reference example. If you renamed it, merged this service into your own stack, or switched to `build: .`, keep using your own file — nothing in an update requires replacing it.
 
+Building locally with `build: .` instead of pulling:
+```bash
+docker compose build --build-arg AUTOMOWER_BLE_SHA=$(date +%s)
+docker compose up -d
+```
+
 <details>
 <summary><b>Upgrading from 1.6.x?</b> (skip on a fresh install)</summary>
 

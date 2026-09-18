@@ -40,11 +40,16 @@ jobs:
             type=semver,pattern={{version}}
             type=sha
 
+      - name: Resolve automower-ble branch head
+        id: ble
+        run: echo "sha=$(git ls-remote https://github.com/gruijter/AutoMower-BLE.git combined-fixes | cut -f1)" >> "$GITHUB_OUTPUT"
+
       - name: Build and push (linux/amd64 + linux/arm64)
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
+          build-args: AUTOMOWER_BLE_SHA=${{ steps.ble.outputs.sha }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

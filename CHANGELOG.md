@@ -8,6 +8,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Starts at 1.5.
 - `lift` falls back to `GetLiftSensorLegacy` (4476/6) on mowers where `GetComboardSensorData` is unsupported.
 
 ### Fixed
+- An upgrade kept the old mower protocol library. It tracks a branch, so neither pip nor Docker could tell it had moved: pip saw an unchanged `requirements.txt`, Docker reused the cached layer. The native update now refetches it explicitly, and the image build keys that layer on the branch head.
 - `FROST_SENSOR` wrote to register 4476, which is lift sensing, not frost. On models where `GetFrostSensorEnabled` is unsupported this fallback ran first. Frost is 5370 only.
 - `frostSensorEnabled` reported `ON` whenever the mower was lifted, because the 4476 reading was OR'd into it.
 - `FROST_SENSOR` raised `KeyError`: `SetFrostSensorEnabledLegacy` no longer exists in the `automower-ble` dependency.

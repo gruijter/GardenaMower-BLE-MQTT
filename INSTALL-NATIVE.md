@@ -354,6 +354,7 @@ cd ~/GardenaMower-BLE-MQTT
 git pull
 source .venv/bin/activate
 pip3 install --no-cache-dir --ignore-requires-python --upgrade -r requirements.txt
+pip3 install --no-cache-dir --force-reinstall --no-deps git+https://github.com/gruijter/AutoMower-BLE.git@combined-fixes
 sudo systemctl restart mower-mqtt.service
 ```
 No pairing repeat needed — bonding is preserved on the host.
